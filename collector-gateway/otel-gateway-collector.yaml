@@ -117,7 +117,7 @@ spec:
       # pyroscope-tenant-overrides.yaml) - none of these three exposed
       # their own ingestion/discard metrics under a queryable Mimir tenant
       # on their own, same gap Mimir itself would have had without
-      # prometheus/mimir-self. Confirmed live (this session) each of these
+      # prometheus/mimir-self. Confirmed live each of these
       # three endpoints actually exposes the relevant metrics before
       # wiring them in: loki_discarded_samples_total/loki_distributor_bytes_received_total
       # (loki-distributor:3100/metrics), tempo_discarded_spans_total/

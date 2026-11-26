@@ -263,10 +263,12 @@ resource "kubernetes_config_map_v1" "openclaw_config" {
     "openclaw.json" = templatefile("${path.module}/../../../openclaw/openclaw.json", {
       openclaw_model       = var.openclaw_model
       trusted_proxies_json = jsonencode(local.node_internal_ips)
+      dns_zone_name        = var.dns_zone_name
     })
     "AGENTS.md" = templatefile("${path.module}/../../../openclaw/workspace-templates/AGENTS.md", {
       openclaw_organisation_name = var.openclaw_organisation_name
       vm_rocky_demo_ip           = data.azurerm_virtual_machine.vm_rocky_demo.private_ip_address
+      resource_group_name        = var.resource_group_name
     })
     "SOUL.md" = file("${path.module}/../../../openclaw/workspace-templates/SOUL.md")
     "USER.md" = templatefile("${path.module}/../../../openclaw/workspace-templates/USER.md", {
@@ -858,7 +860,7 @@ resource "kubernetes_network_policy_v1" "openclaw_egress" {
 
 # ---------------------------------------------------------------------------
 # Public HTTPS access to OpenClaw's own gateway/control UI
-# (openclaw.sre.fs167.ch) - same Traefik IngressRoute + cert-manager
+# (openclaw.<dns-zone>) - same Traefik IngressRoute + cert-manager
 # Certificate pattern as Grafana's (observability-stack-crs), skipped
 # entirely when cert-manager isn't configured yet (README A6), same
 # guard that pattern already uses - the ClusterIssuer these reference
@@ -875,13 +877,13 @@ resource "kubernetes_network_policy_v1" "openclaw_egress" {
 resource "kubernetes_manifest" "openclaw_cert" {
   count = var.cert_manager_client_id != "" ? 1 : 0
 
-  manifest = yamldecode(file("${path.module}/../../../k8s/ingress/openclaw-cert.yaml"))
+  manifest = yamldecode(templatefile("${path.module}/../../../k8s/ingress/openclaw-cert.yaml", { dns_zone_name = var.dns_zone_name }))
 }
 
 resource "kubernetes_manifest" "openclaw_ingressroute" {
   count = var.cert_manager_client_id != "" ? 1 : 0
 
-  manifest   = yamldecode(file("${path.module}/../../../k8s/ingress/openclaw-ingressroute.yaml"))
+  manifest   = yamldecode(templatefile("${path.module}/../../../k8s/ingress/openclaw-ingressroute.yaml", { dns_zone_name = var.dns_zone_name }))
   depends_on = [kubernetes_manifest.openclaw_cert]
 }
 

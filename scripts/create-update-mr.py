@@ -4,7 +4,7 @@ Turn an update request (typically supplied by a pipeline trigger from
 the self-service onboarding form's "Update" mode) into a merge request
 that changes an already-onboarded system's owner and/or environments/
 ingestion budget - never merges anything itself, that's still the
-platform operator's job (see README.md#onboarding-process).
+platform operator's job (see docs/self-service.md#onboarding-process).
 
 Deliberately narrower than onboarding: `system_id`, `type`, `name`,
 `cost_center`, `dashboard_template`, `demo_narrative`, and
@@ -30,7 +30,7 @@ Plus these, automatically present in any GitLab CI job:
 
 And one that is NOT automatically present, must be set by hand as a
 masked/protected CI/CD variable (same one onboarding:create-mr uses):
-    GITLAB_API_TOKEN - see README.md#onboarding-process for how to
+    GITLAB_API_TOKEN - see docs/self-service.md#onboarding-process for how to
         create it; NOT CI_JOB_TOKEN, same 404-on-repository-API-endpoints
         reason as that script.
 
@@ -164,7 +164,7 @@ def main() -> None:
                 f"new owner/environments below.\n\n"
                 f"Submitted via the self-service onboarding pipeline's update "
                 f"mode - review and merge to apply it. See "
-                f"README.md#onboarding-process.\n\n"
+                f"docs/self-service.md#onboarding-process.\n\n"
                 f"**Owner**: {manifest['owner']['team']} "
                 f"({manifest['owner']['contact']})\n\n"
                 f"**Environments**: "

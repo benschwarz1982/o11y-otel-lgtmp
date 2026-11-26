@@ -110,7 +110,7 @@
   <p class="lead" id="lead-text">
     Submit your system for onboarding to the Grafana LGTM observability stack.
     This opens a merge request against
-    <a data-repo-link href="https://gitlab.com/sre1541921/observability-otel-demo" target="_blank" rel="noopener">the platform repo</a>
+    <a data-repo-link href="#" target="_blank" rel="noopener">the platform repo</a>
     - the observability platform owner still reviews and merges it, nothing is provisioned automatically from this form.
   </p>
 
@@ -262,18 +262,18 @@
   // pipeline trigger token used to do this anonymously - but a trigger
   // token can set ANY variable, including ones the jobs trust (e.g.
   // CI_API_V4_URL, which would send GITLAB_API_TOKEN to another host).
-  // See README.md#onboarding-process.
+  // See docs/self-service.md#onboarding-process.
   //
   // Served from GitHub Pages (<owner>.github.io/<repo>/), the same request
   // opens a prefilled GitHub issue (.github/ISSUE_TEMPLATE/
   // self-service-request.yml) instead; .github/workflows/onboarding.yml
   // turns it into a pull request. Again no credentials here: the
   // requester submits the issue as their own GitHub user.
-  var GITLAB_REPO_URL = "https://gitlab.com/sre1541921/observability-otel-demo";
-  var ON_GITHUB = /\.github\.io$/.test(location.hostname);
-  var REPO_URL = ON_GITHUB
-    ? "https://github.com/" + location.hostname.split(".")[0] + "/" + location.pathname.split("/")[1]
-    : GITLAB_REPO_URL;
+  // The repository URL is filled in when the form is published (GitLab
+  // `pages` job: $CI_PROJECT_URL, GitHub Pages workflow: the repository).
+  var REPO_URL = "__REPO_URL__";
+  var ON_GITHUB = REPO_URL.indexOf("https://github.com/") === 0;
+  var GITLAB_REPO_URL = REPO_URL;
   var RUN_PIPELINE_URL = GITLAB_REPO_URL + "/-/pipelines/new";
   var CHANGE_REQUEST = ON_GITHUB ? "pull request" : "merge request";
   var REPO_LINK = '<a href="' + REPO_URL + '" target="_blank" rel="noopener">the platform repo</a>';

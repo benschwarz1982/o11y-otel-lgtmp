@@ -10,4 +10,4 @@ spec:
     name: letsencrypt-azuredns
     kind: ClusterIssuer
   dnsNames:
-    - astronomy-shop.sre.fs167.ch
+    - astronomy-shop.${dns_zone_name}

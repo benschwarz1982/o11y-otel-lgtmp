@@ -6,7 +6,7 @@ runtime** → application). Template: [`config.yaml`](config.yaml) -
 the single canonical file, rendered directly by
 `ansible/roles/platform-windows/` (no separate copy under
 `ansible/roles/`) - see [README.md's A/B/C
-chapters](../../../README.md#deployment) for the pipeline that runs
+chapters](../../../docs/setup.md#deployment) for the pipeline that runs
 it (`deploy-instrumentations:1229-windows-basis`).
 
 ## 1. Architecture
@@ -66,7 +66,7 @@ automatically the way Linux's `/etc/os-release` does (see
   vendor concept as clear-cut as Linux's distro).
 - **`otlp/host`** exporter: `tenant_id` header, same mechanism as
   every other platform - see
-  [Multi-Tenancy](../../../README.md#b9-multi-tenancy-onboarding).
+  [Multi-Tenancy](../../../docs/setup.md#b9-multi-tenancy-onboarding).
 
 ## 4. Validation
 
@@ -78,7 +78,7 @@ Invoke-WebRequest http://localhost:8888/metrics | Select-String otelcol_process_
 ## 5. Known Pitfalls
 
 Found live during this platform's own rollout - see [README.md's
-Known Pitfalls](../../../README.md#known-pitfalls) for the full
+Known Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls) for the full
 write-up:
 - **The `resourcedetection` processor's `system` detector doesn't
   populate an OS-release-equivalent attribute on Windows** - unlike

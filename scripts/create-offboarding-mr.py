@@ -3,7 +3,7 @@
 Turn an offboarding request (typically supplied by a pipeline trigger
 from the self-service onboarding form's "Offboarding" mode) into a
 manifest-deleting merge request - never merges anything itself, that's
-still the platform operator's job (see README.md#onboarding-process).
+still the platform operator's job (see docs/self-service.md#onboarding-process).
 Reverse of scripts/create-onboarding-mr.py, same GitLab API pattern.
 
 Expected environment variable:
@@ -18,7 +18,7 @@ Plus these, automatically present in any GitLab CI job:
 
 And one that is NOT automatically present, must be set by hand as a
 masked/protected CI/CD variable (same one onboarding:create-mr uses):
-    GITLAB_API_TOKEN - see README.md#onboarding-process for how to
+    GITLAB_API_TOKEN - see docs/self-service.md#onboarding-process for how to
         create it; NOT CI_JOB_TOKEN, same 404-on-repository-API-endpoints
         reason as that script.
 
@@ -125,7 +125,7 @@ def main() -> None:
                 f"review and merge to remove it. Its Mimir/Loki ingestion budget, gateway "
                 f"allowlist entry, and dashboard will be removed on the next `onboarding:apply` "
                 f"run; its Grafana datasources will be tombstoned (Grafana's own datasource "
-                f"provisioning can't delete them outright). See README.md#onboarding-process."
+                f"provisioning can't delete them outright). See docs/self-service.md#onboarding-process."
             ),
             "remove_source_branch": True,
         }

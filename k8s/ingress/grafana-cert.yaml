@@ -10,4 +10,4 @@ spec:
     name: letsencrypt-azuredns
     kind: ClusterIssuer
   dnsNames:
-    - grafana.sre.fs167.ch
+    - grafana.${dns_zone_name}

@@ -8,7 +8,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`kundenverwaltung.sre.fs167.ch`)
+    - match: Host(`kundenverwaltung.${dns_zone_name}`)
       kind: Rule
       services:
         - name: kundenverwaltung

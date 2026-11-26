@@ -1,7 +1,6 @@
 variable "resource_group_name" {
   type        = string
   description = "Name of the (already existing) Azure Resource Group - usually pre-provisioned in sandbox subscriptions, see README"
-  default     = "rg-bensc-001"
 }
 
 variable "location" {
@@ -13,7 +12,6 @@ variable "location" {
 variable "dns_zone_name" {
   type        = string
   description = "Name of the already existing Azure DNS subdomain zone (created manually, see README section A2)"
-  default     = "sre.fs167.ch"
 }
 
 variable "aks_cluster_name" {

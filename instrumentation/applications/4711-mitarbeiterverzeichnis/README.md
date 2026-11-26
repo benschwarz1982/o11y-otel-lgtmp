@@ -8,12 +8,12 @@ Runs on [1286 Linux Basis](../../platforms/1286-linux-basis/) (Apache Tomcat) +
 the [Java middleware template](../../middleware/java/) - Tomcat's own
 JVM/app-server telemetry reports under this same application tenant,
 not a separate middleware one, see [Multi-
-Tenancy](../../../README.md#b9-multi-tenancy-onboarding)'s
+Tenancy](../../../docs/setup.md#b9-multi-tenancy-onboarding)'s
 "Middleware/runtime tenants" note.
 
 ## System ID
 
-`4711` - see [Onboarding](../../../README.md#onboarding). Dashboard
+`4711` - see [Onboarding](../../../docs/self-service.md#onboarding). Dashboard
 template: `applications/tomcat-vm.template.json`.
 
 ## Concrete Config

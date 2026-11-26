@@ -11,7 +11,7 @@
 # "shared" (not nested under any one system - cross-tenant, no single
 # owning system_id) - same top-level folder its own dashboard lives in.
 #
-# This rule went through three earlier, replaced designs this session,
+# This rule went through three earlier, replaced designs,
 # each found live to measure the wrong thing:
 #
 # 1. A discard-count alert (cortex_discarded_samples_total{reason=

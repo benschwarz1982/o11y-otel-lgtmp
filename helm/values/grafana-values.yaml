@@ -19,7 +19,7 @@ deploymentStrategy:
 
 grafana.ini:
   server:
-    root_url: https://grafana.sre.fs167.ch
+    root_url: https://grafana.${dns_zone_name}
 
 # Automatic provisioning instead of manual UI clicks under
 # Connections > Data Sources (README step B5). This static list is

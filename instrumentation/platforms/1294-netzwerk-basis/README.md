@@ -42,7 +42,7 @@ scoped by nature, nothing else to layer on top.
 
 Applied by Terraform as this pod's collector ConfigMap
 (`fleet-1294-netzwerk-basis/main.tf`) - no manual install. See
-[C. Fleets](../../../README.md#c-fleets-pipeline) for the
+[C. Fleets](../../../docs/setup.md#c-fleets-pipeline) for the
 `deploy-fleets:1294-netzwerk-basis`/`deploy-instrumentations:1294-
 netzwerk-basis` CI jobs that provision/instrument it.
 
@@ -68,7 +68,7 @@ Query Mimir for `network.io{tenant="1294-prod"}` /
 
 No platform-specific pitfalls found live for this one yet (unlike
 Linux/Windows/Kubernetes) - see [README.md's Known
-Pitfalls](../../../README.md#known-pitfalls) for the repo-wide list if
+Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls) for the repo-wide list if
 one comes up.
 
 ## Rollout Checklist

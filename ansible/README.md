@@ -4,7 +4,7 @@
 milestone 1. Design decision: classic Ansible over SSH (Linux)/WinRM
 (Windows) - a deliberate, explicit exception to this repo's usual
 "no SSH/RDP, only `az vm run-command`" rule (see main README
-[Fleets](../README.md#c-fleets-pipeline)),
+[Fleets](../docs/setup.md#c-fleets-pipeline)),
 chosen over `ansible-pull` because that has no clean Windows equivalent.
 
 Structure:

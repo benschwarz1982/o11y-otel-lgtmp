@@ -25,7 +25,7 @@ def require_ci_token() -> None:
     if not os.environ.get(TOKEN_VARIABLE):
         print(
             f"This script only runs inside CI ({PLATFORM} needs {TOKEN_VARIABLE} - "
-            "see README.md#onboarding-process).",
+            "see docs/self-service.md#onboarding-process).",
             file=sys.stderr,
         )
         sys.exit(1)

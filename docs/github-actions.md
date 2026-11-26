@@ -103,7 +103,7 @@ One-time, in this order.
    principal) are replaced by:
 
    ```bash
-   GITHUB_REPO=<owner>/<repo> ./bootstrap/bootstrap.sh
+   RG=<resource-group> GITHUB_REPO=<owner>/<repo> ./bootstrap/bootstrap.sh
    ```
 
    It prints the repository variables for the next step.
@@ -113,10 +113,14 @@ One-time, in this order.
 
    | Variable | Value |
    |---|---|
+   | `AZURE_RESOURCE_GROUP` | the resource group (same as `RG` above) |
+   | `DNS_ZONE` | Azure DNS zone of the public hostnames, e.g. `sre.example.com` |
+   | | `AZURE_RESOURCE_GROUP`, `DNS_ZONE`, `ACME_EMAIL` may also be `demo` environment secrets (masked in logs) |
    | `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID` | from bootstrap |
    | `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT`, `TFSTATE_CONTAINER` | from bootstrap |
    | `CERT_MANAGER_CLIENT_ID` | cert-manager service principal (README A6) |
    | optional: `OPENCLAW_MODEL`, `AGENT_NAME`, `ORGANISATION_NAME`, `OPERATOR_NAME` | OpenClaw overrides (README A7) |
+   | optional: `ACME_EMAIL` | Let's Encrypt contact address |
    | optional: `CI_IMAGE_PREFIX` | default `ghcr.io/<owner>/<repo>/ci-tools` - set it (lowercase) if the repository name has capitals |
 
    Settings → Environments → **`demo`**: deployment branches "Selected
@@ -160,6 +164,7 @@ One-time, in this order.
 ```bash
 az login
 export ARM_USE_AZUREAD=true TFSTATE_RESOURCE_GROUP=... TFSTATE_STORAGE_ACCOUNT=... TFSTATE_CONTAINER=tfstate
+export TF_VAR_resource_group_name=<resource-group> TF_VAR_dns_zone_name=<dns-zone>
 ci/scripts/tf-init.sh demo && terraform -chdir=terraform/environments/demo plan
 ```
 

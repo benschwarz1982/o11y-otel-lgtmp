@@ -1,6 +1,5 @@
 variable "resource_group_name" {
-  type    = string
-  default = "rg-bensc-001"
+  type = string
 }
 
 variable "aks_cluster_name" {

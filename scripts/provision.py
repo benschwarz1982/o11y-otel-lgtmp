@@ -19,7 +19,7 @@ comment this script writes above each block. Every onboarded tenant is
 included, 4087 (the platform itself) as well - it goes through the same
 onboarding/approval flow as everyone else, see README.md's IaC Roadmap.
 All four systems' limits are derived from the exact same per-manifest
-`size` tier (see `compute_overrides()`) - confirmed live this session
+`size` tier (see `compute_overrides()`) - confirmed live
 that Tempo/Pyroscope actually enforce these (real `429`/discard-metric
 rejections observed against deliberately tiny test values before
 writing this code). The `size` tier's DAILY ingestion budget
@@ -35,7 +35,7 @@ touch the actual cluster. The generated files are committed in the
 merge request together with the manifest change (the onboarding/update/
 offboarding MR scripts do it automatically, by hand: run this and
 commit), and checked to be up to date by scripts/provisioning_sync.py
---check; tenants:rollout deploys them. See README.md#onboarding-process.
+--check; tenants:rollout deploys them. See docs/self-service.md#onboarding-process.
 
 Usage:
     python3 scripts/provision.py
@@ -100,13 +100,13 @@ SIZE_MIMIR_SAMPLES_PER_DAY = {"S": 1_073_742, "M": 10_737_418, "L": 26_843_546}
 # rate to near-zero once it crosses 100% of its own daily_gb budget,
 # summed across all four signals - see that script's own comments),
 # not by making small tenants chronically rate-limited the way the
-# old size-derived rate/burst did (found live this session: it made
+# old size-derived rate/burst did (found live: it made
 # legitimate S-tier application traffic get throttled for reasons
 # unrelated to how much that tenant had actually used that day).
 GENERIC_INGESTION_RATE_MB = 50
 GENERIC_INGESTION_BURST_MB = 100
 # Raised from 2/4 (this constant's original value, then briefly 10/20)
-# - found live this session that even 10 MB/s wasn't enough for a
+# - found live that even 10 MB/s wasn't enough for a
 # single active demo tenant's REAL combined traffic: 4720 (OTel
 # Astronomy Shop Demo) alone was measured rejecting ~3700-4500
 # samples/s (Mimir) on top of ~300-2400/s accepted, once its own
@@ -178,7 +178,7 @@ def compute_overrides(env: str, size: str):
         },
         # Explicit, matching helm/values/tempo-values.yaml's own
         # overrides.defaults.metrics_generator block exactly - found
-        # live this session that Tempo's per-tenant override struct
+        # live that Tempo's per-tenant override struct
         # REPLACES the tenant's entire block wholesale rather than
         # merging field-by-field with the global default, so having
         # only "ingestion" here (as this override originally did)
@@ -394,7 +394,7 @@ def update_tempo_values(tenants, yaml: YAML):
         "# `helm upgrade tempo grafana-community/tempo-distributed --reuse-values -f tempo-tenant-overrides.yaml`,\n"
         "# which layers this file's per_tenant_overrides map on top of\n"
         "# whatever deploy:observability-stack already deployed (Helm deep-merges\n"
-        "# nested maps under --reuse-values). Confirmed live this session that\n"
+        "# nested maps under --reuse-values). Confirmed live that\n"
         "# Tempo actually enforces these (real tempo_discarded_spans_total{reason=\n"
         '# \"rate_limited\"} increments against a deliberately tiny test value,\n'
         "# before this code was written) - Tempo had no per-tenant budget at\n"
@@ -427,7 +427,7 @@ def update_pyroscope_values(tenants, yaml: YAML):
         "# `helm upgrade pyroscope grafana/pyroscope --reuse-values -f pyroscope-tenant-overrides.yaml`,\n"
         "# which layers this file's pyroscope.tenantOverrides map on top of\n"
         "# whatever deploy:observability-stack already deployed (Helm deep-merges\n"
-        "# nested maps under --reuse-values). Confirmed live this session that\n"
+        "# nested maps under --reuse-values). Confirmed live that\n"
         "# Pyroscope actually enforces these (real HTTP 429 resource_exhausted\n"
         "# rejections against a deliberately tiny test value, before this code\n"
         "# was written) - pyroscope-values.yaml's own header comment previously\n"

@@ -75,7 +75,7 @@
 #     (form -> tenants:create-mr -> MR -> review -> tenants:apply,
 #     reconciling every manifest's Mimir/Loki ingestion budgets, Grafana
 #     datasources/dashboards, and the gateway's tenant allowlist - see
-#     README.md#onboarding) -> tenants:rollout, in the same
+#     docs/self-service.md#onboarding) -> tenants:rollout, in the same
 #     pipeline (needs: + a matching rule, see that job's own comment).
 #     tenants:rollout's own Terraform state also deploys the 5 demo
 #     alert rules now (moved from deploy:observability-stack - see
@@ -256,7 +256,12 @@ default:
 
 variables:
   KUBE_NAMESPACE: observability
-  AZURE_RESOURCE_GROUP: rg-bensc-001
+  # AZURE_RESOURCE_GROUP, DNS_ZONE (e.g. sre.example.com) and optionally
+  # ACME_EMAIL are project CI/CD variables (README, section A); Terraform
+  # gets them as its required inputs.
+  TF_VAR_resource_group_name: $AZURE_RESOURCE_GROUP
+  TF_VAR_dns_zone_name: $DNS_ZONE
+  TF_VAR_acme_email: $ACME_EMAIL
   AKS_CLUSTER_NAME: aks-otel-demo
   TF_STATE_NAME: demo
   TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}"
@@ -1028,6 +1033,7 @@ pages:
   script:
     - mkdir -p public
     - cp form/index.html public/index.html
+    - sed -i "s#__REPO_URL__#${CI_PROJECT_URL}#" public/index.html
   artifacts:
     paths:
       - public
@@ -2509,7 +2515,7 @@ deploy-instrumentations:4722-spesenabrechnung:
 
 # ---------------------------------------------------------------------------
 # demo stage - one break/fix job pair per Use Case in README.md's Demo
-# Use Cases table (see README.md#runbook for the presenter steps),
+# Use Cases table (see docs/demo.md#runbook for the presenter steps),
 # so each row's own alert (see alerting/README.md) can be forced and
 # cleared live, independently, any time - same "always-available manual
 # button, no changes: gate" idiom as .destroy_fleet below, since these
@@ -2572,7 +2578,7 @@ demo:uc1-break:
       done
       echo "started:"; cat /tmp/demo-uc1-cpu.pids
       EOF
-    - az vm run-command invoke -g rg-bensc-001 -n vm-rocky-demo --command-id RunShellScript --scripts @/tmp/uc1-break.sh
+    - az vm run-command invoke -g "$AZURE_RESOURCE_GROUP" -n vm-rocky-demo --command-id RunShellScript --scripts @/tmp/uc1-break.sh
     - echo "2 CPU-spin loops started on vm-rocky-demo - '1286 Linux Basis - host CPU > 80%' should fire in ~1-2 min, see Grafana's Alerting page."
 
 demo:uc1-fix:
@@ -2601,7 +2607,7 @@ demo:uc1-fix:
       fi
       echo "stopped - verified no CPU-spin loop remains"
       EOF
-    - az vm run-command invoke -g rg-bensc-001 -n vm-rocky-demo --command-id RunShellScript --scripts @/tmp/uc1-fix.sh
+    - az vm run-command invoke -g "$AZURE_RESOURCE_GROUP" -n vm-rocky-demo --command-id RunShellScript --scripts @/tmp/uc1-fix.sh
     - echo "CPU-spin loops killed. Alert clears on its next evaluation (~1 min)."
 
 # UC2 - Windows Service Crash: a detached background loop on
@@ -2659,7 +2665,7 @@ demo:uc2-break:
       Set-Content -Path C:\demo-uc2-kill-loop.ps1 -Value $loopScript
       Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\demo-uc2-kill-loop.ps1" -WindowStyle Hidden
       EOF
-    - az vm run-command invoke -g rg-bensc-001 -n vm-windows-demo --command-id RunPowerShellScript --scripts @/tmp/uc2-break.ps1
+    - az vm run-command invoke -g "$AZURE_RESOURCE_GROUP" -n vm-windows-demo --command-id RunPowerShellScript --scripts @/tmp/uc2-break.ps1
     - echo "Print Spooler crash loop started (kills it every 30s) - '1229 Windows Server Basis - Print Spooler service crashed' should fire in ~1-2 min, see Grafana's Alerting page."
 
 demo:uc2-fix:
@@ -2670,7 +2676,7 @@ demo:uc2-fix:
       Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*demo-uc2-kill-loop.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
       Remove-Item -Path C:\demo-uc2-kill-loop.ps1 -ErrorAction SilentlyContinue
       EOF
-    - az vm run-command invoke -g rg-bensc-001 -n vm-windows-demo --command-id RunPowerShellScript --scripts @/tmp/uc2-fix.ps1
+    - az vm run-command invoke -g "$AZURE_RESOURCE_GROUP" -n vm-windows-demo --command-id RunPowerShellScript --scripts @/tmp/uc2-fix.ps1
     - echo "Crash loop stopped - Print Spooler stabilizes (its own recovery policy was never touched). Alert clears once no new errors appear within its lookback window (~2 min)."
 
 # UC3 - Kubernetes Microservices: flips the Astronomy Shop chart's own
@@ -2740,7 +2746,7 @@ demo:uc3-fix:
 # scripts/demo-uc4-flood.py's own docstring for the full rationale and
 # why Loki specifically. Demo tenant moved from 4722 to 4711
 # (Mitarbeiterverzeichnis, S-tier, 1 GiB/day - see README.md's Demo Use
-# Cases) in an earlier commit this session; this is the first time its
+# Cases) in an earlier commit; this is the first time its
 # own break/fix jobs actually reflect that.
 demo:uc4-break:
   extends: .demo_uc
@@ -2751,7 +2757,7 @@ demo:uc4-break:
     - echo "Flooding Mitarbeiterverzeichnis's (4711-prod) Loki ingestion for ~2.5 minutes to push it over its daily budget..."
     - python3 scripts/demo-uc4-flood.py
     - kill $PF_PID
-    - echo "Flood complete. The daily-budget enforcer only checks every 2 minutes (not a real-time gate like the per-second rate limit is - found live this session, some overshoot past 100% before it catches up is expected), so allow up to ~2 more minutes for 'Tenant ingestion budget exhausted (>100% of daily budget)' to fire for 4711-prod and for its rate/burst limit to actually be throttled to near-zero on all four systems - see the Operator dashboard."
+    - echo "Flood complete. The daily-budget enforcer only checks every 2 minutes (not a real-time gate like the per-second rate limit is - found live, some overshoot past 100% before it catches up is expected), so allow up to ~2 more minutes for 'Tenant ingestion budget exhausted (>100% of daily budget)' to fire for 4711-prod and for its rate/burst limit to actually be throttled to near-zero on all four systems - see the Operator dashboard."
 
 # Runs scripts/ingestion-midnight-snapshot.py's --reset-tenant mode as a
 # one-off in-cluster Job (not from this runner directly - that mode

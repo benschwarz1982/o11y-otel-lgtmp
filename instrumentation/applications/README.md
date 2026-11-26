@@ -39,7 +39,7 @@ app.payment-gateway.processing_stage: "settlement"
    currently Core-Schema-only).
 4. Check for naming collisions and cardinality risk against
    [`schema/core.yaml`](../schema/core.yaml)'s Cardinality
-   Rule before adding one - see [B10](../../README.md#b10-telemetry-schema).
+   Rule before adding one - see [B10](../../docs/setup.md#b10-telemetry-schema).
 
 ## This Demo's Applications
 

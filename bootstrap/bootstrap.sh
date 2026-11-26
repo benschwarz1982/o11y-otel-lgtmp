@@ -30,7 +30,7 @@
 set -euo pipefail
 
 : "${GITHUB_REPO:?Set GITHUB_REPO=<owner>/<repo>}"
-RG="${RG:-rg-bensc-001}"
+RG="${RG:?set RG to the resource group (e.g. RG=rg-otel-demo)}"
 VNET="${VNET:-aks-vnet}"
 ENVIRONMENT="${ENVIRONMENT:-demo}"
 CONTAINER="${CONTAINER:-tfstate}"

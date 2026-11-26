@@ -3,7 +3,7 @@
 Turn a set of GitLab CI/CD variables (typically supplied by a pipeline
 trigger from the self-service onboarding form) into a new manifest, and
 open a merge request for it - never merges anything itself, that's still
-the platform operator's job (see README.md#onboarding-process).
+the platform operator's job (see docs/self-service.md#onboarding-process).
 
 Expected environment variables:
     SYSTEM_ID       - e.g. "4712" (from the architecture inventory tool)
@@ -38,7 +38,7 @@ masked/protected CI/CD variable:
         something fixable via project settings. Ideally a Project Access
         Token, but Project Access Token creation is disabled for this
         namespace with no self-service toggle, so a Personal Access
-        Token is used instead. See README.md#onboarding-process for how
+        Token is used instead. See docs/self-service.md#onboarding-process for how
         to create it.
 
 Refuses to run outside CI (needs the platform's API token to call back
@@ -196,14 +196,14 @@ def main() -> None:
                 f"Automated onboarding request for **{manifest['name']}** "
                 f"(`{manifest['system_id']}`, type `{manifest['type']}`).\n\n"
                 f"Submitted via the self-service onboarding pipeline - "
-                f"review and merge to provision it. See README.md#onboarding-process."
+                f"review and merge to provision it. See docs/self-service.md#onboarding-process."
             ),
             "remove_source_branch": True,
         }
     )
 
     # No explicit POST /merge_requests/:iid/pipelines call here - tried
-    # that (see README.md#known-pitfalls for the full story), but
+    # that (see docs/known-pitfalls.md#known-pitfalls for the full story), but
     # GitLab's own auto-trigger turned out inconsistent in both
     # directions: sometimes it didn't fire on its own (the original
     # motivation), sometimes it did AND the explicit call also

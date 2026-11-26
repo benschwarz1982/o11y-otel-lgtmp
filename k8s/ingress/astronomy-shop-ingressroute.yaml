@@ -8,7 +8,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`astronomy-shop.sre.fs167.ch`)
+    - match: Host(`astronomy-shop.${dns_zone_name}`)
       kind: Rule
       services:
         - name: frontend-proxy

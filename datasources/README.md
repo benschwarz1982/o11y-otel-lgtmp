@@ -1,7 +1,7 @@
 # Datasources
 
 [← Back to the main README](../README.md) - see [B6. Per-Tenant
-Datasources/Dashboards](../README.md#b6-per-tenant-datasourcesdashboards)
+Datasources/Dashboards](../docs/setup.md#b6-per-tenant-datasourcesdashboards)
 for the full write-up.
 
 One Grafana datasource ConfigMap per onboarded tenant (Mimir/Loki/Tempo

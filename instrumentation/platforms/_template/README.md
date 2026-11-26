@@ -26,7 +26,7 @@ wording), so nobody mistakes it for one:
 4. **Validation** - how to confirm data actually reaches Mimir/Loki/
    Tempo under the right tenant.
 5. **Known Pitfalls** - link to [README.md's Known
-   Pitfalls](../../../README.md#known-pitfalls) for anything already
+   Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls) for anything already
    found live; add new entries there too, not only here, if you find
    one.
 6. **Rollout Checklist** - a short table, same shape as the other

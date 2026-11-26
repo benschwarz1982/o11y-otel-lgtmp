@@ -10,7 +10,7 @@ variable "location" {
 
 variable "dns_zone_name" {
   type        = string
-  description = "Name of the already existing Azure DNS subdomain zone (e.g. sre.fs167.ch) - referenced via a data source, not created by Terraform (see main README section A2)"
+  description = "Name of the already existing Azure DNS subdomain zone (e.g. sre.example.com) - referenced via a data source, not created by Terraform (see main README section A2)"
 }
 
 variable "clients_vnet_address_space" {

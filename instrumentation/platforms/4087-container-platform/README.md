@@ -9,7 +9,7 @@ time: Terraform reads it directly
 stack-crs/main.tf`) and applies it as an `OpenTelemetryCollector` CR
 via the OTel Operator - no placeholder substitution needed, every
 value in it is already final. See [README.md's
-B2](../../../README.md#b2-lgtm-stack--otel-collectors) for how it's
+B2](../../../docs/setup.md#b2-lgtmp-stack--otel-collectors) for how it's
 deployed.
 
 ## 1. Architecture
@@ -34,8 +34,8 @@ One agent per node (DaemonSet), not per pod - it serves the whole
 node's host/kubelet metrics and every pod's container logs, routed to
 each log's *owning* application tenant via a `routing` connector (not
 the agent's own platform tenant) - see [Multi-
-Tenancy](../../../README.md#b9-multi-tenancy-onboarding) and [Known
-Pitfalls](../../../README.md#known-pitfalls) for why that routing
+Tenancy](../../../docs/setup.md#b9-multi-tenancy-onboarding) and [Known
+Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls) for why that routing
 exists (container logs used to land under the platform tenant for
 every app, found live).
 
@@ -44,7 +44,7 @@ every app, found live).
 Applied via the OTel Operator (`observability-stack`'s
 `opentelemetry_operator` `helm_release`) reading this `Open
 TelemetryCollector` CR - no manual per-node install, see
-[B2](../../../README.md#b2-lgtm-stack--otel-collectors).
+[B2](../../../docs/setup.md#b2-lgtmp-stack--otel-collectors).
 
 ## 3. Collector Config Walkthrough
 
@@ -77,7 +77,7 @@ kubectl logs -n observability -l app.kubernetes.io/name=otel-agent --tail=50
 ## 5. Known Pitfalls
 
 See [README.md's Known
-Pitfalls](../../../README.md#known-pitfalls) for the full write-up of
+Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls) for the full write-up of
 each - this platform accumulated more of these than any other, since
 it's the one every onboarded Kubernetes-based application's telemetry
 actually flows through:

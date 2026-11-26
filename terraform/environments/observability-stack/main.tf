@@ -690,7 +690,7 @@ resource "helm_release" "grafana" {
   chart      = "grafana"
   version    = "14.6.1"
   namespace  = kubernetes_namespace_v1.observability.metadata[0].name
-  values     = [file("${path.module}/../../../helm/values/grafana-values.yaml")]
+  values     = [templatefile("${path.module}/../../../helm/values/grafana-values.yaml", { dns_zone_name = var.dns_zone_name })]
 
   # Empty (the default) means "don't override" - the chart falls back to
   # its own behavior of auto-generating a random password into the
