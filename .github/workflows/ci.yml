@@ -22,6 +22,7 @@ jobs:
   workflows:
     name: GitHub Actions workflows
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -37,6 +38,7 @@ jobs:
   yaml:
     name: YAML
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - *checkout
       # yamllint is preinstalled on the GitHub-hosted Ubuntu image.
@@ -45,6 +47,7 @@ jobs:
   shell:
     name: Shell
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - *checkout
       - run: find . -name "*.sh" -not -path "./.git/*" -exec shellcheck {} +
@@ -52,6 +55,7 @@ jobs:
   python:
     name: Python (ruff)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container: &python python:3.15.2-slim
     steps:
       - *checkout
@@ -64,6 +68,7 @@ jobs:
   ansible:
     name: Ansible
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container: *python
     steps:
       - *checkout
@@ -77,6 +82,7 @@ jobs:
   manifests:
     name: Manifests + generated files
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container: *python
     steps:
       - *checkout
@@ -90,6 +96,7 @@ jobs:
   rules:
     name: Alert/SLO rules
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: read
@@ -108,6 +115,7 @@ jobs:
   python-deps:
     name: Python dependencies (pip-audit)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container: *python
     steps:
       - *checkout
@@ -116,6 +124,7 @@ jobs:
   terraform:
     name: Terraform fmt + validate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
     steps:
@@ -137,6 +146,7 @@ jobs:
   dockerfile:
     name: Dockerfile (hadolint)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - *checkout
       - uses: docker://hadolint/hadolint:v2.15.1-alpine
@@ -147,6 +157,7 @@ jobs:
   kubernetes:
     name: Kubernetes manifests (kubeconform)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - *checkout
       - uses: docker://ghcr.io/yannh/kubeconform:v0.8.0-alpine
@@ -164,6 +175,7 @@ jobs:
   secrets:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -178,6 +190,7 @@ jobs:
   iac:
     name: IaC misconfiguration scan (trivy)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - *checkout
       - uses: docker://ghcr.io/aquasecurity/trivy:0.76.2

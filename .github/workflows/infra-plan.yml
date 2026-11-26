@@ -23,6 +23,7 @@ jobs:
   plan:
     name: Terraform plan (infra)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: demo
     permissions:
       contents: read

@@ -36,8 +36,9 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify generated files
+    name: 1 Verify generated files
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
@@ -58,9 +59,10 @@ jobs:
         run: echo "commit_order=$(git rev-list --count --first-parent HEAD)" | tee -a "$GITHUB_OUTPUT"
 
   rollout:
-    name: Roll out
+    name: 2 Roll out
     needs: verify
     runs-on: [self-hosted, linux, otel-demo]
+    timeout-minutes: 45
     environment: demo
     permissions:
       contents: read
