@@ -120,14 +120,19 @@ flowchart LR
 
 1. **Azure** - create the DNS zone, `aks-vnet` and the cert-manager service
    principal ([setup, section A](docs/setup.md#a-one-time-bootstrapping-manual)),
-   then in Cloud Shell:
+   then run the bootstrap as **Owner** of the resource group - in Azure
+   Cloud Shell (Bash) or anywhere with the Azure CLI and your own login:
    ```sh
-   RG=<resource-group> GITHUB_REPO=<owner>/<repo> ./bootstrap/bootstrap.sh
+   git clone https://github.com/<owner>/<repo>.git && cd <repo>
+   export RG=<resource-group>
+   export GITHUB_REPO=<owner>/<repo>
+   ./bootstrap/bootstrap.sh
    ```
    It creates the Terraform state storage and an OIDC-federated managed
-   identity and prints the repository variables.
-2. **GitHub** - add the [variables and secrets](#configuration), create the
-   environment `demo` (deployment branches: `main` only).
+   identity and prints the settings for the next step
+   ([details](docs/github-actions.md#setup)).
+2. **GitHub** - create the environment `demo` (deployment branches:
+   `main` only) and add the [settings and secrets](#configuration).
 3. **Runner** - register the self-hosted runner on the management VM:
    ```sh
    GITHUB_REPO=<owner>/<repo> RUNNER_TOKEN=<token> RUNNER_COUNT=2 ./bootstrap/github-runner.sh
@@ -141,25 +146,28 @@ Step-by-step details: [docs/github-actions.md](docs/github-actions.md#setup).
 
 ## Configuration
 
-**Repository variables** (Settings → Secrets and variables → Actions):
+Every setting can be a **repository variable** (Settings → Secrets and
+variables → Actions → Variables) or a **secret of the `demo` environment**
+(Settings → Environments → demo) - the workflows read
+`vars.<NAME> || secrets.<NAME>`. Secrets are masked in the public logs,
+so resource group, domain and IDs never show up there. Exceptions:
+`CI_IMAGE_PREFIX` and `SELF_SERVICE_APP_ID` must be variables (GitHub
+does not allow secrets where they are used).
 
-`AZURE_RESOURCE_GROUP`, `DNS_ZONE` and `ACME_EMAIL` may instead be secrets of
-the `demo` environment - the workflows read either, and secrets are masked
-in the public logs.
-
-| Variable | Required | Description |
+| Setting | Required | Description |
 |---|---|---|
 | `AZURE_RESOURCE_GROUP` | yes | Resource group everything is deployed into |
 | `DNS_ZONE` | yes | Azure DNS zone of the public hostnames, e.g. `sre.example.com` |
-| `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID` | yes | From `bootstrap.sh` (the deploy identity) |
-| `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT`, `TFSTATE_CONTAINER` | yes | From `bootstrap.sh` (Terraform state) |
+| `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | yes | Printed by `bootstrap.sh` |
+| `AZURE_CLIENT_ID` | yes | Client ID of the deploy identity `id-otel-demo-deploy`, printed by `bootstrap.sh` |
+| `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT`, `TFSTATE_CONTAINER` | yes | Terraform state location, printed by `bootstrap.sh` (container `tfstate`) |
 | `CERT_MANAGER_CLIENT_ID` | yes | cert-manager service principal (DNS-01 challenges) |
 | `ACME_EMAIL` | no | Let's Encrypt contact address; default none |
 | `OPENCLAW_MODEL`, `AGENT_NAME`, `ORGANISATION_NAME`, `OPERATOR_NAME` | no | OpenClaw model and identity strings |
-| `CI_IMAGE_PREFIX` | no | Default `ghcr.io/<owner>/<repo>/ci-tools` |
-| `SELF_SERVICE_APP_ID` | no | GitHub App for self-service pull requests (with secret `SELF_SERVICE_APP_PRIVATE_KEY`) |
+| `CI_IMAGE_PREFIX` | no, variable only | Default `ghcr.io/<owner>/<repo>/ci-tools` |
+| `SELF_SERVICE_APP_ID` | no, variable only | GitHub App for self-service pull requests (with secret `SELF_SERVICE_APP_PRIVATE_KEY`) |
 
-**Environment secrets** (environment `demo`):
+**Secrets** (environment `demo`, always secrets):
 
 | Secret | Used by |
 |---|---|

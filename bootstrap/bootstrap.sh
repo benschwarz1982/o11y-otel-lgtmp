@@ -120,7 +120,8 @@ assign "$RBAC_ADMIN" "$VNET_ID" "$CONDITION"
 
 cat <<EOF
 
-Done. GitHub -> Settings -> Secrets and variables -> Actions -> Variables:
+Done. Set these as repository variables or as secrets of the environment
+"$ENVIRONMENT" (masked in logs) - the workflows read either:
 
   AZURE_TENANT_ID          $TENANT_ID
   AZURE_SUBSCRIPTION_ID    $SUB_ID
@@ -129,6 +130,6 @@ Done. GitHub -> Settings -> Secrets and variables -> Actions -> Variables:
   TFSTATE_STORAGE_ACCOUNT  $SA
   TFSTATE_CONTAINER        $CONTAINER
 
-Then create the environment "$ENVIRONMENT" (deployment branches: main only)
-and put the secrets there - see README "GitHub Actions".
+The environment "$ENVIRONMENT" must allow deployments from main only.
+Remaining settings and secrets: README "Configuration".
 EOF
