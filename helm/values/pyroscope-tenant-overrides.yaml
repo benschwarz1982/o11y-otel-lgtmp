@@ -5,7 +5,7 @@
 # `helm upgrade pyroscope grafana/pyroscope --reuse-values -f pyroscope-tenant-overrides.yaml`,
 # which layers this file's pyroscope.tenantOverrides map on top of
 # whatever deploy:observability-stack already deployed (Helm deep-merges
-# nested maps under --reuse-values). Confirmed live this session that
+# nested maps under --reuse-values). Confirmed live that
 # Pyroscope actually enforces these (real HTTP 429 resource_exhausted
 # rejections against a deliberately tiny test value, before this code
 # was written) - pyroscope-values.yaml's own header comment previously

@@ -39,7 +39,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AZURE_RESOURCE_GROUP: rg-bensc-001
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || secrets.AZURE_RESOURCE_GROUP }}
+  TF_VAR_resource_group_name: ${{ vars.AZURE_RESOURCE_GROUP || secrets.AZURE_RESOURCE_GROUP }}
+  TF_VAR_dns_zone_name: ${{ vars.DNS_ZONE || secrets.DNS_ZONE }}
+  TF_VAR_acme_email: ${{ vars.ACME_EMAIL || secrets.ACME_EMAIL }}
   AKS_CLUSTER_NAME: aks-otel-demo
   ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
   ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}

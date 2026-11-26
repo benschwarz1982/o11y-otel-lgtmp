@@ -9,7 +9,7 @@ Runs on [1229 Windows Server Basis](../../platforms/1229-windows-basis/) + the
 
 ## System ID
 
-`4722` - see [Onboarding](../../../README.md#onboarding). Dashboard
+`4722` - see [Onboarding](../../../docs/self-service.md#onboarding). Dashboard
 template: `applications/dotnet-vm.template.json`.
 
 ## Concrete Config

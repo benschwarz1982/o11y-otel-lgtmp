@@ -9,12 +9,12 @@ Runs on [Kubernetes](../../platforms/4087-container-platform/) - a plain JDK
 own dedicated PostgreSQL database is provisioned in the same
 environment/state and reports under this same tenant, not a separate
 platform tenant - see [Multi-
-Tenancy](../../../README.md#b9-multi-tenancy-onboarding)'s
+Tenancy](../../../docs/setup.md#b9-multi-tenancy-onboarding)'s
 "Middleware/runtime tenants" note.
 
 ## System ID
 
-`4721` - see [Onboarding](../../../README.md#onboarding). Dashboard
+`4721` - see [Onboarding](../../../docs/self-service.md#onboarding). Dashboard
 template: `applications/java-k8s.template.json`.
 
 ## Concrete Config

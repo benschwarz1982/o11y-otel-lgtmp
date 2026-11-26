@@ -159,7 +159,7 @@ rule: >-
 # Every entry's `template` is the single canonical file - also what's
 # actually deployed live (see each `deployed_via` for the mechanism).
 # No separate "reference" vs. "live" copy exists anywhere anymore -
-# collapsed this session after finding the two had drifted apart for
+# collapsed after finding the two had drifted apart for
 # Linux/Windows (the ansible/roles/*/templates/*.j2 mirrors never got
 # this schema's attributes) - see README.md's Known Pitfalls.
 platform_extensions:

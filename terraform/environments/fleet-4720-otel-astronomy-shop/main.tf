@@ -3,7 +3,7 @@
 # destroy-fleet-4720-otel-astronomy-shop.sh - IaC Roadmap milestone
 # "Terraform for the Kubernetes-native demo apps". The official
 # OpenTelemetry Astronomy Shop Demo chart, plus public ingress
-# (astronomy-shop.sre.fs167.ch).
+# (astronomy-shop.<dns-zone>).
 
 data "azurerm_kubernetes_cluster" "main" {
   name                = var.aks_cluster_name
@@ -64,8 +64,8 @@ resource "helm_release" "astronomy_shop" {
 }
 
 # ---------------------------------------------------------------------------
-# Public ingress (astronomy-shop.sre.fs167.ch) - same pattern as
-# fleet-4139-postgresql's kundenverwaltung.sre.fs167.ch (see that
+# Public ingress (astronomy-shop.<dns-zone>) - same pattern as
+# fleet-4139-postgresql's kundenverwaltung.<dns-zone> (see that
 # environment's own comment for why no time_sleep is needed here -
 # Traefik already exists by the time this job runs).
 # ---------------------------------------------------------------------------
@@ -90,11 +90,11 @@ resource "azurerm_dns_a_record" "astronomy_shop" {
 # live-tested for Grafana's own cert/ingressroute in
 # observability-stack-crs.
 resource "kubernetes_manifest" "astronomy_shop_cert" {
-  manifest = yamldecode(file("${path.module}/../../../k8s/ingress/astronomy-shop-cert.yaml"))
+  manifest = yamldecode(templatefile("${path.module}/../../../k8s/ingress/astronomy-shop-cert.yaml", { dns_zone_name = var.dns_zone_name }))
 }
 
 resource "kubernetes_manifest" "astronomy_shop_ingressroute" {
-  manifest   = yamldecode(file("${path.module}/../../../k8s/ingress/astronomy-shop-ingressroute.yaml"))
+  manifest   = yamldecode(templatefile("${path.module}/../../../k8s/ingress/astronomy-shop-ingressroute.yaml", { dns_zone_name = var.dns_zone_name }))
   depends_on = [kubernetes_manifest.astronomy_shop_cert]
 }
 

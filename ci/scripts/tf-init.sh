@@ -11,6 +11,10 @@ dir="terraform/environments/${env_name}"
 [ -d "${dir}" ] || { echo "No such environment: ${dir}" >&2; exit 1; }
 
 : "${TFSTATE_RESOURCE_GROUP:?}" "${TFSTATE_STORAGE_ACCOUNT:?}" "${TFSTATE_CONTAINER:?}"
+# An unset repository variable arrives as "" - which Terraform accepts as
+# a value for a required variable. Fail here with a clear message instead.
+: "${TF_VAR_resource_group_name:?set the repository variable AZURE_RESOURCE_GROUP}"
+: "${TF_VAR_dns_zone_name:?set the repository variable DNS_ZONE}"
 
 terraform -chdir="${dir}" init -input=false -no-color \
   -backend-config="resource_group_name=${TFSTATE_RESOURCE_GROUP}" \

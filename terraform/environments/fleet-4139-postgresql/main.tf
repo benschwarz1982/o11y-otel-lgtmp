@@ -634,7 +634,7 @@ resource "kubernetes_deployment_v1" "kundenverwaltung" {
 }
 
 # ---------------------------------------------------------------------------
-# Public ingress (kundenverwaltung.sre.fs167.ch) - same
+# Public ingress (kundenverwaltung.<dns-zone>) - same
 # time_sleep/data-source/azurerm_dns_a_record pattern
 # terraform/environments/observability-stack already uses for Grafana,
 # just per-app here (provisioning-scoped, not telemetry-scoped). Traefik
@@ -666,11 +666,11 @@ resource "azurerm_dns_a_record" "kundenverwaltung" {
 # OpenTelemetryCollector below), low risk of the provider bug that hit
 # otel-gateway-collector.yaml - see that module's own comment.
 resource "kubernetes_manifest" "kundenverwaltung_cert" {
-  manifest = yamldecode(file("${path.module}/../../../k8s/ingress/kundenverwaltung-cert.yaml"))
+  manifest = yamldecode(templatefile("${path.module}/../../../k8s/ingress/kundenverwaltung-cert.yaml", { dns_zone_name = var.dns_zone_name }))
 }
 
 resource "kubernetes_manifest" "kundenverwaltung_ingressroute" {
-  manifest   = yamldecode(file("${path.module}/../../../k8s/ingress/kundenverwaltung-ingressroute.yaml"))
+  manifest   = yamldecode(templatefile("${path.module}/../../../k8s/ingress/kundenverwaltung-ingressroute.yaml", { dns_zone_name = var.dns_zone_name }))
   depends_on = [kubernetes_manifest.kundenverwaltung_cert]
 }
 

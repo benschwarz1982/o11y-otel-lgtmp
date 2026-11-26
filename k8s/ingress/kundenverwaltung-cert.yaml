@@ -10,4 +10,4 @@ spec:
     name: letsencrypt-azuredns
     kind: ClusterIssuer
   dnsNames:
-    - kundenverwaltung.sre.fs167.ch
+    - kundenverwaltung.${dns_zone_name}

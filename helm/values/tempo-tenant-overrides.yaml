@@ -5,7 +5,7 @@
 # `helm upgrade tempo grafana-community/tempo-distributed --reuse-values -f tempo-tenant-overrides.yaml`,
 # which layers this file's per_tenant_overrides map on top of
 # whatever deploy:observability-stack already deployed (Helm deep-merges
-# nested maps under --reuse-values). Confirmed live this session that
+# nested maps under --reuse-values). Confirmed live that
 # Tempo actually enforces these (real tempo_discarded_spans_total{reason=
 # "rate_limited"} increments against a deliberately tiny test value,
 # before this code was written) - Tempo had no per-tenant budget at

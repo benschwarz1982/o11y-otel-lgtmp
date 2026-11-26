@@ -32,22 +32,19 @@ What this script can and can't promise:
     across several languages.
 
 Usage:
-    python3 scripts/trigger-uc3-transaction.py
-    python3 scripts/trigger-uc3-transaction.py --url https://astronomy-shop.sre.fs167.ch/
+    python3 scripts/trigger-uc3-transaction.py --url https://astronomy-shop.<dns-zone>/
 """
 import argparse
 import urllib.request
 import uuid
-
-DEFAULT_URL = "https://astronomy-shop.sre.fs167.ch/"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--url",
-        default=DEFAULT_URL,
-        help=f"URL to hit (default: {DEFAULT_URL} - the shop's own public homepage, "
+        required=True,
+        help="URL to hit - the shop's own public homepage, "
         "which already fans out to several of its own backend services on a plain "
         "GET, no checkout-flow request body needed)",
     )

@@ -22,7 +22,7 @@ ${openclaw_organisation_name} platform on Azure (Switzerland North).
 
 ## Infrastructure
 - **Region:** Azure Switzerland North
-- **Resource Group:** rg-bensc-001
+- **Resource Group:** ${resource_group_name}
 - **AKS VNet:** 10.0.0.0/16 (`aks-vnet`, this Pod's own network)
 - **Clients VNet:** 10.1.0.0/16 (`observability-clients-vnet`, where
   target systems like `vm-rocky-demo` live - peered with `aks-vnet`)

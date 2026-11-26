@@ -42,7 +42,7 @@ runs "on" a storage backend the way it runs on a VM.
 
 Applied by Terraform as this pod's ConfigMap
 (`fleet-4015-filestorage/main.tf`) - no manual install. See
-[C. Fleets](../../../README.md#c-fleets-pipeline) for the
+[C. Fleets](../../../docs/setup.md#c-fleets-pipeline) for the
 `deploy-fleets:4015-filestorage`/`deploy-instrumentations:4015-
 filestorage` CI jobs.
 
@@ -67,7 +67,7 @@ and Tempo for the workload's own storage-operation traces.
 ## 5. Known Pitfalls
 
 No platform-specific pitfalls found live for this one yet - see
-[README.md's Known Pitfalls](../../../README.md#known-pitfalls) for
+[README.md's Known Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls) for
 the repo-wide list if one comes up.
 
 ## Rollout Checklist

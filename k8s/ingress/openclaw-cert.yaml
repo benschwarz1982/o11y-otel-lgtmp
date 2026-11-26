@@ -10,4 +10,4 @@ spec:
     name: letsencrypt-azuredns
     kind: ClusterIssuer
   dnsNames:
-    - openclaw.sre.fs167.ch
+    - openclaw.${dns_zone_name}

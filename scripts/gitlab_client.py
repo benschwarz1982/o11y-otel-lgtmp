@@ -15,7 +15,7 @@ Auth: GITLAB_API_TOKEN, not CI_JOB_TOKEN - CI_JOB_TOKEN reliably 404s on
 repository endpoints (branches/commits) even for this same project, a
 long-standing GitLab limitation (see e.g.
 https://gitlab.com/gitlab-org/gitlab/-/issues/482639). See
-README.md#processes for how to create the token.
+docs/self-service.md#processes for how to create the token.
 """
 import os
 import sys

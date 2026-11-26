@@ -1,7 +1,7 @@
 # Instrumentation Templates
 
 [← Back to the main README](../README.md) - see
-[`B10. Telemetry Schema`](../README.md#b10-telemetry-schema) for the
+[`B10. Telemetry Schema`](../docs/setup.md#b10-telemetry-schema) for the
 full write-up. This is the index for a 3-layer model - "where do I
 make a change" starts here:
 

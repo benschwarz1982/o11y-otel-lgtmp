@@ -69,7 +69,7 @@ processors:
 A dedicated **read-only** ONTAP monitoring user (not an admin account)
 is the expected setup for Harvest, same "least privilege" principle
 this repo already applies to its own bootstrap Service Principals (see
-[Known Pitfalls](../../../README.md#known-pitfalls)).
+[Known Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls)).
 
 ## 4. Logs/Events
 

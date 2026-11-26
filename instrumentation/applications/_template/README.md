@@ -14,7 +14,7 @@ no separate VM platform.)
 
 ## System ID
 
-The System ID assigned via [Onboarding](../../../README.md#onboarding)
+The System ID assigned via [Onboarding](../../../docs/self-service.md#onboarding)
 - the manifest is the source of truth for `owner`/`cost_center`/
 `environments[].size`, which flow into this app's resource attributes
 via the platform/middleware template's own placeholder substitution

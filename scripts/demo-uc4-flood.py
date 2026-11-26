@@ -9,8 +9,8 @@ rate limit is generic and size-independent (scripts/provision.py's
 GENERIC_INGESTION_RATE_MB) rather than tied to the tenant's own size
 tier: under the old design, ANY tenant's fastest possible fill time was
 a fixed 86400/PEAK_FACTOR seconds (~4.8h) regardless of size, since the
-rate limit itself scaled down with a smaller daily budget - found live
-this session, and the reason UC4 couldn't be demoed quickly before this
+rate limit itself scaled down with a smaller daily budget - found live,
+and the reason UC4 couldn't be demoed quickly before this
 redesign. Now the generic ceiling (tens of MB/s) is the same for every
 tenant, so a small tenant's tiny budget (4711-prod/Mitarbeiterverzeichnis,
 S-tier, 1 GiB/day) fills in well under a minute at a modest, sustained

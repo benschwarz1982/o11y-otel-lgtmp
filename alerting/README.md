@@ -1,7 +1,7 @@
 # Alerting
 
 [← Back to the main README](../README.md) - see [B11.
-Alerting](../README.md#b11-alerting) for the full write-up.
+Alerting](../docs/setup.md#b11-alerting) for the full write-up.
 
 Grafana Unified Alerting **rules only** - no contact points, no
 notification policies, no delivery channel (SMTP/Slack/etc.) is
@@ -64,7 +64,7 @@ upstream limitation,
 [grafana/grafana#107158](https://github.com/grafana/grafana/issues/107158)),
 so environment moved to an in-dashboard variable instead of a folder
 level (see the main README's
-[B8](../README.md#b8-per-system-dashboards-onboarding)) and alert
+[B8](../docs/setup.md#b8-per-system-dashboards-onboarding)) and alert
 folders followed suit for consistency. `shared` (UC4, cross-tenant, no
 single owning system) stays flat and top-level, same folder its own
 dashboard (`dashboards/shared/operator-tenant-budget.json`) lives in.
@@ -179,7 +179,7 @@ config templates), an alert rule always needs a concrete
 `datasourceUid` for one specific tenant - there's no such thing as a
 "generic Tomcat alert rule" independent of which application's tenant
 it queries. Per this repo's own "Middleware/runtime tenants" rule (see
-[Multi-Tenancy](../README.md#b9-multi-tenancy-onboarding)), a
+[Multi-Tenancy](../docs/setup.md#b9-multi-tenancy-onboarding)), a
 middleware/runtime's alert condition (e.g. Tomcat, PostgreSQL) would
 live directly in its owning application's own `alert-rules.yaml`, not
 a separate `middleware/` one - no such rule exists live in this repo

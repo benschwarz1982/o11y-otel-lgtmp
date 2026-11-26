@@ -132,7 +132,7 @@ ENV PATH="/opt/ansible-venv/bin:${PATH}"
 FROM terraform AS ansible-windows
 
 # Same venv rationale as ansible-linux above. ansible.windows is pinned
-# exactly - found live in an earlier session: an unpinned install
+# exactly - found live: an unpinned install
 # silently picked up 3.8.0 and broke WinRM entirely ("Unable to execute
 # ssh command line on a controller: No such file or directory: b'ssh'",
 # Ansible falling back to the ssh connection plugin instead of winrm).

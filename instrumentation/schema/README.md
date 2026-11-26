@@ -1,7 +1,7 @@
 # Schema
 
 [← Back to the main README](../../README.md) - see
-[`B10. Telemetry Schema`](../../README.md#b10-telemetry-schema) for the
+[`B10. Telemetry Schema`](../../docs/setup.md#b10-telemetry-schema) for the
 full write-up.
 
 This directory is the **one place** in the repo where the base

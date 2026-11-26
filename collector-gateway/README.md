@@ -49,7 +49,7 @@ are.
 `terraform/environments/tenants/` (`null_resource` + `kubectl apply`,
 not a typed `kubernetes_manifest` - that CR kind hits a reproduced
 `hashicorp/kubernetes` provider bug, see [README.md's Known
-Pitfalls](../README.md#known-pitfalls)), run by the `tenants:rollout`
+Pitfalls](../docs/known-pitfalls.md#known-pitfalls)), run by the `tenants:rollout`
 CI job on every onboarding-approval merge. Its tenant allowlist
 (`filter/reject_unknown_tenants`) is kept in sync with currently
 onboarded tenants by [`scripts/provision.py`](../scripts/provision.py)'s
@@ -58,7 +58,7 @@ docstring for why this file, specifically, needs to change on every
 onboard/offboard, not just when someone hand-edits the collector
 config itself.
 
-See [Multi-Tenancy](../README.md#b9-multi-tenancy-onboarding) for the
+See [Multi-Tenancy](../docs/setup.md#b9-multi-tenancy-onboarding) for the
 full tenant-routing write-up, and [B10. Telemetry
-Schema](../README.md#b10-telemetry-schema) for the Cardinality Rule
+Schema](../docs/setup.md#b10-telemetry-schema) for the Cardinality Rule
 this file's own filter/transform processors enforce.

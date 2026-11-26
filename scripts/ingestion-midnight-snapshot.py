@@ -18,7 +18,7 @@ see git history) as the `ingestion-midnight-snapshot` CronJob
    this version, see query_since_midnight()'s comment for what changed
    and why). Re-pushing the same values every 2 minutes (rather than
    once, at midnight, and never again) is also what fixes a real bug
-   found live earlier this session: a one-off gauge push goes stale
+   found live: a one-off gauge push goes stale
    after Prometheus's default 5-minute staleness window with nothing to
    refresh it.
 2. Enforces each tenant's daily ingestion budget (helm/values/
@@ -132,7 +132,7 @@ SOURCE_METRICS = {
 # The generic per-second limit itself (scripts/provision.py's
 # compute_overrides()) is read from the mounted daily-budgets file at
 # runtime (see load_daily_budgets()/build_runtime_targets() below), not
-# hardcoded here - found live this session that a hand-duplicated copy
+# hardcoded here - found live that a hand-duplicated copy
 # of these two numbers went stale (still 2/4 MB) across two separate
 # bumps of the real value, silently reverting a tenant back to a
 # far-too-low limit every time this script restored it at a midnight

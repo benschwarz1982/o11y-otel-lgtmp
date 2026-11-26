@@ -1,7 +1,6 @@
 variable "resource_group_name" {
   type        = string
   description = "Name of the (already existing) Azure Resource Group, see terraform/environments/demo/variables.tf"
-  default     = "rg-bensc-001"
 }
 
 variable "aks_cluster_name" {
@@ -13,7 +12,6 @@ variable "aks_cluster_name" {
 variable "dns_zone_name" {
   type        = string
   description = "Name of the already existing Azure DNS subdomain zone (see README section A2) - openclaw.<this> gets its own A record/Certificate/IngressRoute, same pattern as Grafana's in observability-stack."
-  default     = "sre.fs167.ch"
 }
 
 variable "cert_manager_client_id" {

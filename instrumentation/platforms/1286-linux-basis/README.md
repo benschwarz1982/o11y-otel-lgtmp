@@ -6,7 +6,7 @@ runtime** → application). Template: [`config.yaml`](config.yaml) -
 the single canonical file, rendered directly by
 `ansible/roles/platform-linux/` (no separate copy under
 `ansible/roles/`) - see [README.md's A/B/C
-chapters](../../../README.md#deployment) for the pipeline that runs
+chapters](../../../docs/setup.md#deployment) for the pipeline that runs
 it (`deploy-instrumentations:1286-linux-basis`).
 
 ## 1. Architecture
@@ -188,7 +188,7 @@ sudo systemctl status otelcol-contrib
   Core Schema attributes - `platform.type`/`platform.vendor` (static),
   `deployment.environment` (per-tenant placeholder).
 - **`otlp/host`** exporter: `tenant_id` header - this is how
-  [Multi-Tenancy](../../../README.md#b9-multi-tenancy-onboarding)
+  [Multi-Tenancy](../../../docs/setup.md#b9-multi-tenancy-onboarding)
   routes this VM's data to its own tenant.
 
 ## 4. Validation
@@ -215,7 +215,7 @@ Two more checks, useful when the above doesn't turn up the problem:
 ## 5. Known Pitfalls
 
 Both found live during this platform's own rollout - see
-[README.md's Known Pitfalls](../../../README.md#known-pitfalls) for
+[README.md's Known Pitfalls](../../../docs/known-pitfalls.md#known-pitfalls) for
 the full write-up of each:
 - **"error creating AttrProc" on startup**: `${env:HOSTNAME}` empty
   because systemd doesn't inherit shell env vars - fixed by the

@@ -11,7 +11,7 @@ already OTel-SDK instrumented by the upstream chart).
 
 ## System ID
 
-`4720` - see [Onboarding](../../../README.md#onboarding). Dashboard
+`4720` - see [Onboarding](../../../docs/self-service.md#onboarding). Dashboard
 template: `applications/microservices-k8s.template.json`.
 
 ## Concrete Config

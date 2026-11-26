@@ -58,6 +58,8 @@ resource "kubernetes_manifest" "cluster_issuer_azuredns" {
     azure_subscription_id  = data.azurerm_client_config.current.subscription_id
     azure_tenant_id        = data.azurerm_client_config.current.tenant_id
     azure_resource_group   = var.resource_group_name
+    dns_zone_name          = var.dns_zone_name
+    acme_email             = var.acme_email
   }))
 }
 
@@ -152,14 +154,14 @@ resource "kubernetes_manifest" "otel_gateway_server_cert" {
 resource "kubernetes_manifest" "grafana_cert" {
   count = var.cert_manager_client_id != "" ? 1 : 0
 
-  manifest   = yamldecode(file("${local.repo_root}/k8s/ingress/grafana-cert.yaml"))
+  manifest   = yamldecode(templatefile("${local.repo_root}/k8s/ingress/grafana-cert.yaml", { dns_zone_name = var.dns_zone_name }))
   depends_on = [kubernetes_manifest.cluster_issuer_azuredns]
 }
 
 resource "kubernetes_manifest" "grafana_ingressroute" {
   count = var.cert_manager_client_id != "" ? 1 : 0
 
-  manifest   = yamldecode(file("${local.repo_root}/k8s/ingress/grafana-ingressroute.yaml"))
+  manifest   = yamldecode(templatefile("${local.repo_root}/k8s/ingress/grafana-ingressroute.yaml", { dns_zone_name = var.dns_zone_name }))
   depends_on = [kubernetes_manifest.grafana_cert]
 }
 

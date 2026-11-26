@@ -108,7 +108,7 @@ ingester:
   persistence:
     enabled: true
     # Was 10Gi - found live filling completely (0 bytes free) after
-    # ~3.5 days of this session's own demo/testing traffic (including
+    # ~3.5 days of the demo/testing traffic (including
     # repeated UC4 flood runs), wedging the ingester's graceful-shutdown
     # flush loop in an infinite "no space left on device" retry loop
     # against its own local WAL/shipper staging directory - not an S3/

@@ -8,7 +8,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`openclaw.sre.fs167.ch`)
+    - match: Host(`openclaw.${dns_zone_name}`)
       kind: Rule
       services:
         - name: openclaw
