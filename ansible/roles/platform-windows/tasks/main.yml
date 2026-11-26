@@ -1,0 +1,144 @@
+---
+# Ansible translation of scripts/instrumentation-1229-windows-basis.sh -
+# installs and configures the platform's own OTel collector, rendering
+# instrumentation/platforms/1229-windows-basis/config.yaml directly (the single
+# canonical copy - no separate mirror lives under this role's own
+# templates/ anymore). Platform-team-owned, no application awareness.
+
+- name: Create the collector installer cache directory
+  # Under Program Files (writable by Administrators/SYSTEM only), not
+  # C:\Windows\Temp where any local user can create and keep
+  # controlling a file at the predictable MSI path.
+  ansible.windows.win_file:
+    path: "C:\\Program Files\\otelcol-contrib-installer"
+    state: directory
+
+- name: Download OTel Collector MSI
+  ansible.windows.win_get_url:
+    url: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ otel_collector_version }}/otelcol-contrib_{{ otel_collector_version }}_windows_x64.msi"
+    dest: "C:\\Program Files\\otelcol-contrib-installer\\otelcol-contrib-{{ otel_collector_version }}.msi"
+    # win_get_url downloads on every run by default (force: true); with
+    # the checksum an existing, intact file is reused and a damaged or
+    # foreign one is replaced. Upstream publishes a bare-hash .sha256
+    # next to every artifact.
+    force: false
+    checksum: "{{ lookup('ansible.builtin.url', 'https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v' ~ otel_collector_version ~ '/otelcol-contrib_' ~ otel_collector_version ~ '_windows_x64.msi.sha256') | trim }}"
+    checksum_algorithm: sha256
+
+- name: Check whether the MSI changes the installed collector
+  ansible.windows.win_package:
+    path: "C:\\Program Files\\otelcol-contrib-installer\\otelcol-contrib-{{ otel_collector_version }}.msi"
+    state: present
+  check_mode: true
+  register: otelcol_msi_check
+
+- name: Read the .NET relay collector service
+  # otelcol-app (ansible/roles/middleware-dotnet) runs the same
+  # otelcol-contrib.exe. While it runs, the MSI cannot replace the file
+  # and defers that to a reboot (exit code 3010).
+  ansible.windows.win_service_info:
+    name: otelcol-app
+  register: otelcol_app_service
+  when: otelcol_msi_check is changed
+
+- name: Stop the .NET relay collector for the upgrade
+  ansible.windows.win_service:
+    name: otelcol-app
+    state: stopped
+  register: otelcol_app_stopped
+  when:
+    - otelcol_msi_check is changed
+    - otelcol_app_service.exists
+    - otelcol_app_service.services[0].state == 'started'
+
+- name: Install the collector, restarting the stopped relay even on failure
+  block:
+    - name: Install OTel Collector MSI
+      ansible.windows.win_package:
+        path: "C:\\Program Files\\otelcol-contrib-installer\\otelcol-contrib-{{ otel_collector_version }}.msi"
+        state: present
+        arguments: /quiet /norestart
+      register: otelcol_msi
+      notify: Restart otelcol-contrib
+  always:
+    - name: Start the .NET relay collector again
+      ansible.windows.win_service:
+        name: otelcol-app
+        state: started
+      when: otelcol_app_stopped is changed
+
+- name: Fail if the collector upgrade needs a reboot
+  # Not rebooting the VM unattended - the new binary would only be in
+  # place after a reboot, so make that visible instead of reporting OK.
+  ansible.builtin.fail:
+    msg: "otelcol-contrib MSI install requires a reboot (exit code 3010) - reboot the VM and re-run this job"
+  when: otelcol_msi.reboot_required | default(false)
+
+- name: Read OS caption and build number
+  # The Windows equivalent of Linux's /etc/os-release - read once here,
+  # set as machine env vars below (${env:OS_NAME}/${env:OS_BUILD} in
+  # instrumentation/platforms/1229-windows-basis/config.yaml), the same "read it
+  # once at setup time" pattern - see that file's own comment for why
+  # resourcedetection's "system" detector doesn't cover this on
+  # Windows.
+  ansible.windows.win_shell: |
+    $os = Get-CimInstance Win32_OperatingSystem
+    if ($os.Caption -match "Windows Server (\d+)") { $osName = "Windows Server $($Matches[1])" } else { $osName = $os.Caption }
+    Write-Output "$osName|$($os.BuildNumber)"
+  changed_when: false
+  register: os_info
+
+- name: Set OS_NAME/OS_BUILD machine environment variables
+  ansible.windows.win_environment:
+    state: present
+    level: machine
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+  loop:
+    - name: OS_NAME
+      value: "{{ os_info.stdout.split('|')[0] }}"
+    - name: OS_BUILD
+      value: "{{ os_info.stdout.split('|')[1] | trim }}"
+  # Must happen before the collector service (re)starts - a running
+  # service doesn't see machine env var changes until restarted.
+  notify: Restart otelcol-contrib
+
+# OTLP mTLS client certificate (generated on the VM, signed by the
+# platform tenant's Issuer, renewed before expiry - F11) and the root CA
+# that verifies the Gateway's server certificate (F08).
+- name: Manage the OTLP client certificate
+  ansible.builtin.import_role:
+    name: otlp_client_cert
+    tasks_from: windows
+  vars:
+    otlp_client_cert_tenant_id: "{{ tenant_id }}"
+    otlp_client_cert_dir: "C:\\Program Files\\OpenTelemetry Collector\\tls"
+
+- name: Restart the collector when its certificate or CA changed
+  ansible.builtin.debug:
+    msg: "OTLP client certificate or CA changed - restarting otelcol-contrib"
+  changed_when: otlp_client_cert_changed | bool
+  when: otlp_client_cert_changed | bool
+  notify: Restart otelcol-contrib
+
+- name: Deploy collector config
+  ansible.windows.win_template:
+    src: "{{ role_path }}/../../../instrumentation/platforms/1229-windows-basis/config.yaml"
+    dest: "C:\\Program Files\\OpenTelemetry Collector\\config.yaml"
+  notify: Restart otelcol-contrib
+
+# Cheap structural sanity check before restarting - catches a broken
+# YAML/schema in the rendered config early, with a clear error in this
+# job's own output rather than "Failed to start service" (Windows
+# Service Manager's own generic error). NOTE: found live that `validate`
+# does NOT exercise the TLS cert/key loading path - it passed even with
+# a client.key the collector's actual startup then rejected outright
+# ("tls: failed to parse private key"). It's a floor, not a full
+# pre-flight check; the actual fix for that class of bug is the
+# corrected PEM generation above and the content-validated key check.
+- name: Validate the freshly rendered collector config before restarting
+  ansible.windows.win_shell: |
+    & "C:\Program Files\OpenTelemetry Collector\otelcol-contrib.exe" validate --config "C:\Program Files\OpenTelemetry Collector\config.yaml"
+  register: otelcol_validate
+  changed_when: false
+  failed_when: otelcol_validate.rc != 0

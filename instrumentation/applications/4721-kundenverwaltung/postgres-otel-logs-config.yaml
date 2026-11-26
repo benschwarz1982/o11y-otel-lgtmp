@@ -1,0 +1,79 @@
+---
+# Dedicated collector for PostgreSQL slow-query logs (a gap independent
+# of any particular Use Case - DB *traces* already work via 4721's JDBC
+# auto-instrumentation, DB *logs* specifically didn't exist until this)
+# - runs as a sidecar in the same pod as postgres itself (see
+# kubernetes_stateful_set.postgres in
+# terraform/environments/fleet-4139-postgresql/main.tf - the directory
+# keeps its old name, see that module's own header comment for why),
+# reading the jsonlog-format log file postgres writes to a shared
+# emptyDir volume. Same "dedicated collector, own tenant" convention as
+# postgres-otel-collector.yaml (metrics) and instrumentation/middleware/tomcat/'s
+# otelcol-tomcat - see those for the VM-based equivalent of this same
+# pattern.
+#
+# Sidecar-in-the-same-pod, not a node-wide DaemonSet or a separate
+# Deployment: postgres's log file only exists on whichever node this
+# one pod happens to be scheduled on, and the platform's own node
+# agent DaemonSet (which does collect every pod's container stdout
+# already) tags everything under the platform's own tenant (4087-prod),
+# not this database's (4721-prod, Kundenverwaltung's own tenant - this
+# DB is exclusively and permanently dedicated to that one application,
+# see README.md's Multi-Tenancy note) - matches the sidecar pattern
+# Crunchy Data (a production Postgres-on-Kubernetes vendor) documents
+# for the same problem.
+receivers:
+  filelog:
+    include:
+      - /var/log/postgresql/*.json
+    start_at: end
+    operators:
+      # Parses the whole jsonlog line into attributes (duration,
+      # message, dbname, user, error_severity, ...) - not attempting to
+      # map its own "timestamp" field to the log record's own
+      # timestamp, collector-observed time is close enough for a demo.
+      - type: json_parser
+
+processors:
+  batch:
+    send_batch_size: 8192
+    timeout: 5s
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  resource/postgres-logs:
+    attributes:
+      - key: service.name
+        value: postgres
+        action: upsert
+      - key: service.namespace
+        value: kundenverwaltung
+        action: upsert
+
+exporters:
+  otlphttp:
+    endpoint: http://otel-gateway-collector.observability.svc.cluster.local:4318
+    tls:
+      insecure: true
+    headers:
+      tenant_id: "4721-prod"
+
+service:
+  # Own self-monitoring metrics port, not the collector's built-in
+  # default (127.0.0.1:8888) - avoids clashing with any other
+  # otelcol-contrib instance that might end up on the same node, same
+  # reasoning as instrumentation/middleware/tomcat/'s otelcol-tomcat.
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8889
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, resource/postgres-logs, batch]
+      exporters: [otlphttp]

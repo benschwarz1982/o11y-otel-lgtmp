@@ -1,0 +1,17 @@
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: kundenverwaltung-ingress
+  namespace: kundenverwaltung
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`kundenverwaltung.sre.fs167.ch`)
+      kind: Rule
+      services:
+        - name: kundenverwaltung
+          port: 8080
+  tls:
+    secretName: kundenverwaltung-tls-secret

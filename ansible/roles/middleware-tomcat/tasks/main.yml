@@ -1,0 +1,18 @@
+---
+# The single canonical implementation of Tomcat install + OTel
+# instrumentation for the fixed demo fleet's Terraform/Ansible-managed
+# path - see install.yml's own comment for why the hand-runnable
+# setup/instrument-tomcat.sh scripts that used to stand in for a
+# by-hand equivalent were deleted rather than kept in sync. Two tagged
+# files instead of two playbooks, so the existing
+# fleet-4711-mitarbeiterverzeichnis (install)/
+# instrumentation-4711-mitarbeiterverzeichnis (instrument) CI-job split
+# (install without telemetry, then add it) is preserved.
+
+- name: Install Tomcat (no telemetry yet)
+  ansible.builtin.import_tasks: install.yml
+  tags: install
+
+- name: Add OTel instrumentation
+  ansible.builtin.import_tasks: instrument.yml
+  tags: instrument

@@ -1,0 +1,185 @@
+---
+name: CI
+
+# Lint and scan everything on every pull request and push to main. Runs
+# on GitHub-hosted runners only, needs no secrets and no Azure access -
+# safe for pull requests from forks. Tool versions match the GitLab
+# pipeline's validate:* jobs.
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workflows:
+    name: GitHub Actions workflows
+    runs-on: ubuntu-latest
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+      - name: zizmor (workflow security)
+        run: pipx run zizmor==1.33.1 --min-severity medium .github/
+
+  yaml:
+    name: YAML
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      # yamllint is preinstalled on the GitHub-hosted Ubuntu image.
+      - run: "yamllint -d '{extends: default, rules: {line-length: disable}}' ."
+
+  shell:
+    name: Shell
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - run: find . -name "*.sh" -not -path "./.git/*" -exec shellcheck {} +
+
+  python:
+    name: Python (ruff)
+    runs-on: ubuntu-latest
+    container: &python python:3.15.2-slim
+    steps:
+      - *checkout
+      - run: |
+          python3 -m venv /tmp/venv && . /tmp/venv/bin/activate
+          pip install --quiet --upgrade pip
+          pip install --quiet -r ci/requirements/python-lint.txt
+          ruff check .
+
+  ansible:
+    name: Ansible
+    runs-on: ubuntu-latest
+    container: *python
+    steps:
+      - *checkout
+      - run: |
+          python3 -m venv /tmp/venv && . /tmp/venv/bin/activate
+          pip install --quiet --upgrade pip
+          pip install --quiet -r ci/requirements/ansible-lint.txt
+          chmod o-w ansible
+          cd ansible && ansible-lint
+
+  manifests:
+    name: Manifests + generated files
+    runs-on: ubuntu-latest
+    container: *python
+    steps:
+      - *checkout
+      - run: |
+          python3 -m venv /tmp/venv && . /tmp/venv/bin/activate
+          pip install --quiet --upgrade pip
+          pip install --quiet -r ci/requirements/onboarding.txt
+          python3 scripts/validate-manifests.py
+          python3 scripts/provisioning_sync.py --check
+
+  rules:
+    name: Alert/SLO rules
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    # sloth + promtool live in the CI image (ci/images/Dockerfile).
+    container:
+      image: ${{ vars.CI_IMAGE_PREFIX || format('ghcr.io/{0}/ci-tools', github.repository) }}/terraform:v1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - run: |
+          python3 scripts/generate-rules.py --check
+          python3 scripts/test-rules.py
+
+  python-deps:
+    name: Python dependencies (pip-audit)
+    runs-on: ubuntu-latest
+    container: *python
+    steps:
+      - *checkout
+      - run: ci/scripts/pip-audit.sh
+
+  terraform:
+    name: Terraform fmt + validate
+    runs-on: ubuntu-latest
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+    steps:
+      - *checkout
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e  # v4.0.1
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+      - run: |
+          mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+          terraform fmt -check -recursive -diff terraform
+          rc=0
+          for dir in terraform/environments/*/; do
+            echo "== ${dir}"
+            (cd "${dir}" && terraform init -backend=false -input=false >/dev/null && terraform validate -no-color) || rc=1
+          done
+          exit $rc
+
+  dockerfile:
+    name: Dockerfile (hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - uses: docker://hadolint/hadolint:v2.15.1-alpine
+        with:
+          entrypoint: hadolint
+          args: --failure-threshold error ci/images/Dockerfile
+
+  kubernetes:
+    name: Kubernetes manifests (kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - uses: docker://ghcr.io/yannh/kubeconform:v0.8.0-alpine
+        with:
+          entrypoint: /kubeconform
+          # CRD schemas pinned to a datreeio/CRDs-catalog commit.
+          args: >-
+            -strict -summary
+            -schema-location default
+            -schema-location https://raw.githubusercontent.com/datreeio/CRDs-catalog/89c736bdde38b5fecd0f8436ec5f3aa3679a3b86/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+            k8s tls-certs datasources collector-gateway
+            instrumentation/applications/4721-kundenverwaltung/postgres-otel-collector.yaml
+            instrumentation/platforms/4087-container-platform/config.yaml
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: docker://ghcr.io/gitleaks/gitleaks:v8.30.1
+        with:
+          entrypoint: /bin/sh
+          # The workspace is owned by the runner user, not the container's.
+          args: -c "git config --global --add safe.directory /github/workspace && gitleaks git --no-banner --redact --verbose ."
+
+  iac:
+    name: IaC misconfiguration scan (trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - uses: docker://ghcr.io/aquasecurity/trivy:0.76.2
+        with:
+          args: config --exit-code 1 --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml .

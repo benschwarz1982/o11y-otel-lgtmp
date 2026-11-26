@@ -1,0 +1,73 @@
+---
+# Translates scripts/fleet-4722-spesenabrechnung.sh 1:1 - installs the
+# .NET SDK, publishes the Spesenabrechnung app, registers it as a
+# Windows service (deliberately started without
+# OTEL_EXPORTER_OTLP_ENDPOINT set, so no telemetry reaches this
+# platform yet - see instrument.yml for that, run as a separate CI
+# job/tag).
+
+- name: Download .NET SDK installer
+  ansible.windows.win_get_url:
+    url: https://aka.ms/dotnet/8.0/dotnet-sdk-win-x64.exe
+    dest: "C:\\Windows\\Temp\\dotnet-sdk.exe"
+
+- name: Install .NET SDK
+  # win_shell (not win_package) - the SDK installer doesn't expose a
+  # stable product code to match against, same literal-translation
+  # approach the original script already used (Start-Process -Wait).
+  ansible.windows.win_shell: |
+    Start-Process "C:\Windows\Temp\dotnet-sdk.exe" -ArgumentList "/install /quiet /norestart" -Wait
+
+- name: Create C:\spesenabrechnung
+  ansible.windows.win_file:
+    path: C:\spesenabrechnung
+    state: directory
+
+- name: Copy Spesenabrechnung source files
+  # Copied straight from app/4722-spesenabrechnung/ - the canonical
+  # copy, not duplicated under this role.
+  ansible.windows.win_copy:
+    src: "{{ item }}"
+    dest: "C:\\spesenabrechnung\\{{ item | basename }}"
+  loop:
+    - "{{ playbook_dir }}/../../app/4722-spesenabrechnung/Spesenabrechnung.csproj"
+    - "{{ playbook_dir }}/../../app/4722-spesenabrechnung/Program.cs"
+
+- name: Publish the Spesenabrechnung app
+  ansible.windows.win_shell: |
+    cd C:\spesenabrechnung
+    & 'C:\Program Files\dotnet\dotnet.exe' publish -c Release -o publish
+
+- name: Set ASPNETCORE_URLS/ASPNETCORE_ENVIRONMENT machine environment variables
+  ansible.windows.win_environment:
+    state: present
+    level: machine
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+  loop:
+    - name: ASPNETCORE_URLS
+      value: "http://0.0.0.0:8080"
+    - name: ASPNETCORE_ENVIRONMENT
+      value: Production
+
+- name: Create the Spesenabrechnung Windows service
+  # win_shell (not a dedicated module) - matches the original script's
+  # own sc.exe calls literally.
+  ansible.windows.win_shell: |
+    sc.exe create Spesenabrechnung binPath= "C:\spesenabrechnung\publish\Spesenabrechnung.exe" start= auto DisplayName= "Spesenabrechnung Demo App"
+    sc.exe failure Spesenabrechnung reset= 60 actions= restart/5000/restart/5000/restart/5000
+
+- name: Open firewall port 8080
+  # win_shell, not a dedicated module - win_firewall_rule lives in
+  # community.windows, not ansible.windows (the only Windows collection
+  # installed in CI), found live: "couldn't resolve module/action
+  # 'ansible.windows.win_firewall_rule'". Matches the original script's
+  # own New-NetFirewallRule call literally instead of adding a new
+  # collection dependency for one task.
+  ansible.windows.win_shell: |
+    New-NetFirewallRule -DisplayName "Spesenabrechnung8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -ErrorAction SilentlyContinue
+
+- name: Start the Spesenabrechnung service
+  ansible.windows.win_service:
+    name: Spesenabrechnung
+    state: started

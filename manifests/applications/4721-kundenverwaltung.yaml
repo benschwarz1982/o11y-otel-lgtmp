@@ -1,0 +1,23 @@
+---
+system_id: '4721'
+type: application
+name: Kundenverwaltung
+owner:
+  team: Platform Engineering
+  contact: platform-team@example.com
+cost_center: CC-4721
+environments:
+  - env: prod
+    size: M
+k8s_namespaces:
+  prod:
+    - kundenverwaltung
+# G02: the "Created customer" log line contains the customer's JSON;
+# the platform catalog already masks the e-mail, this masks the name.
+redaction:
+  patterns:
+    - name: customer-name
+      regex: '"name":"[^"]*"'
+platform_refs:
+  - '4087'
+dashboard_template: applications/java-k8s.template.json

@@ -1,0 +1,74 @@
+---
+# instrumentation/middleware/dotnet/collector-config.yaml
+#
+# Local OTLP relay for a .NET application on a Windows VM (F03). The app's
+# OpenTelemetry SDK exports to 127.0.0.1:4317; this collector forwards
+# traces/metrics/logs to the Gateway over mTLS with the APPLICATION's own
+# tenant certificate - so the tenant is bound to the certificate, not to
+# a tenant_id header the app could set to anything. Runs as its own
+# Windows service (otelcol-app), separate from the platform collector
+# (instrumentation/platforms/1229-windows-basis/config.yaml, service
+# otelcol-contrib) on the same VM, same binary.
+#
+# Rendered by ansible/roles/middleware-dotnet/tasks/instrument.yml.
+# Jinja2 variables:
+#   {{ traefik_otlp_ip }} - Traefik's internal OTLP mTLS LoadBalancer IP
+#   {{ tenant_id }}       - this application's own tenant, e.g. "4722-prod"
+
+receivers:
+  # Loopback only. The platform collector on this VM has no OTLP
+  # receiver, so 4317 is free.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+
+processors:
+  batch:
+    send_batch_size: 8192
+    timeout: 5s
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # Same mTLS path as the platform collector's otlp/host, with this
+  # application's own certificate (ansible/roles/otlp_client_cert). The
+  # server certificate is verified against the internal root CA under the
+  # SNI name (F08).
+  otlp/app:
+    endpoint: "{{ traefik_otlp_ip }}:14317"
+    tls:
+      cert_file: "C:\\ProgramData\\otelcol-app\\tls\\client.crt"
+      key_file: "C:\\ProgramData\\otelcol-app\\tls\\client.key"
+      ca_file: "C:\\ProgramData\\otelcol-app\\tls\\ca.crt"
+      server_name_override: "{{ tenant_id }}.otlp.internal"
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
+
+service:
+  # Own self-monitoring port - 8888 is taken by the platform collector.
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8889
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/app]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/app]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/app]

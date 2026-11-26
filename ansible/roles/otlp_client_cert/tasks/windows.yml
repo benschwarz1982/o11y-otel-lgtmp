@@ -1,0 +1,209 @@
+---
+# OTLP mTLS client certificate lifecycle on a Windows VM (F11) plus the
+# CA that verifies the Gateway's server certificate (F08). Shared by
+# platform-windows (platform tenant) and middleware-dotnet (application
+# tenant). Same bring-your-own-CSR flow as linux.yml; the key is
+# generated on the VM and never leaves it. (Re)issued whenever the key is invalid, the certificate is missing
+# or expires within otlp_client_cert_renew_before_seconds.
+
+- name: Ensure the OTLP TLS directory exists
+  ansible.windows.win_file:
+    path: "{{ otlp_client_cert_dir }}"
+    state: directory
+
+# Only SYSTEM (the collector services' account) and Administrators may
+# read the key.
+- name: Restrict the OTLP TLS directory to SYSTEM and Administrators
+  ansible.windows.win_shell: |
+    icacls "{{ otlp_client_cert_dir }}" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+  changed_when: false
+
+# Valid = key and certificate exist, the key's RSA modulus matches the
+# certificate (parsed from the PKCS#1 DER by hand, see vars/main.yml -
+# this platform's RSACng can't import PEM keys and some one-call
+# export/import methods are broken, see the generation task below) and
+# the certificate doesn't expire within the renewal window.
+- name: Check the current OTLP client certificate
+  ansible.windows.win_shell: |
+    $dir = "{{ otlp_client_cert_dir }}"
+    $keyPath = Join-Path $dir "client.key"; $crtPath = Join-Path $dir "client.crt"
+    if (-not (Test-Path $keyPath) -or -not (Test-Path $crtPath)) { Write-Output "missing"; exit 0 }
+    {{ otlp_client_cert_ps_helpers | indent(4) }}
+    try {
+      if ((Get-KeyModulus $keyPath) -ne (Get-CertModulus $crtPath)) { Write-Output "mismatch"; exit 0 }
+      $crt = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $crtPath
+      if ($crt.NotAfter -lt (Get-Date).AddSeconds({{ otlp_client_cert_renew_before_seconds }})) { Write-Output "expiring"; exit 0 }
+      Write-Output "valid"
+    } catch { Write-Output "unreadable" }
+  register: otlp_client_cert_state
+  changed_when: false
+
+- name: Decide whether to (re)issue the OTLP client certificate
+  ansible.builtin.set_fact:
+    otlp_client_cert_issue: "{{ otlp_client_cert_state.stdout | trim != 'valid' }}"
+
+- name: Report the certificate state
+  ansible.builtin.debug:
+    msg: "OTLP client certificate for {{ otlp_client_cert_tenant_id }}: {{ otlp_client_cert_state.stdout | trim }}"
+
+# The new key and certificate are staged as *.new and only replace the
+# working pair once signing succeeded and they match - a failed renewal
+# leaves the collector's current (still valid) credentials untouched.
+
+# The PKCS#1 DER encoding is built BY HAND from ExportParameters(true)
+# instead of calling a one-shot export method - found live, in order:
+# RSA.Create(2048) returns RSACng on this .NET Framework/Windows Server
+# 2022 platform, whose ExportPkcs8PrivateKey() silently returns a
+# ZERO-BYTE array (CreateSigningRequest() with the same key worked
+# fine, proving the key itself was valid), and ExportRSAPrivateKey()
+# doesn't exist on this type at all ("does not contain a method
+# named..."). RSACng here is simply missing/broken support for the
+# modern one-call export methods. ExportParameters(true) is the
+# original RSA key-material accessor (present on every RSA
+# implementation .NET has ever shipped) - the DER assembly below
+# follows RFC 3447 Appendix A.1.2's RSAPrivateKey ASN.1 structure
+# exactly (version, modulus, publicExponent, privateExponent, prime1,
+# prime2, exponent1, exponent2, coefficient) and was verified against a
+# reference PKCS#1 encoder (Python's `cryptography` library) before
+# being ported here: byte-identical output, confirmed valid by
+# `openssl rsa -check`. The explicit length checks turn any future
+# recurrence of this class of bug into an immediate, loud task failure
+# instead of a mysteriously empty file three steps removed from the
+# real cause.
+- name: Generate a new private key + CSR on the VM
+  ansible.windows.win_shell: |
+    function ConvertTo-Pem($bytes, $label) {
+      $b64 = [Convert]::ToBase64String($bytes)
+      $lines = for ($i = 0; $i -lt $b64.Length; $i += 64) { $b64.Substring($i, [Math]::Min(64, $b64.Length - $i)) }
+      return "-----BEGIN $label-----`n" + ($lines -join "`n") + "`n-----END $label-----`n"
+    }
+    function DerLength([int]$len) {
+      if ($len -lt 0x80) { return [byte[]]@([byte]$len) }
+      $tmp = New-Object System.Collections.Generic.List[byte]
+      $l = $len
+      while ($l -gt 0) { $tmp.Insert(0, [byte]($l -band 0xFF)); $l = $l -shr 8 }
+      return [byte[]](@([byte](0x80 -bor $tmp.Count)) + $tmp.ToArray())
+    }
+    function DerInteger([byte[]]$bytes) {
+      $b = $bytes
+      $i = 0
+      while ($i -lt ($b.Length - 1) -and $b[$i] -eq 0) { $i++ }
+      $b = $b[$i..($b.Length - 1)]
+      if ($b[0] -band 0x80) { $b = [byte[]](@([byte]0x00) + $b) }
+      return [byte[]](@([byte]0x02) + (DerLength $b.Length) + $b)
+    }
+    function DerSequence([byte[][]]$parts) {
+      $body = New-Object System.Collections.Generic.List[byte]
+      foreach ($p in $parts) { $body.AddRange($p) }
+      $bodyArr = $body.ToArray()
+      return [byte[]](@([byte]0x30) + (DerLength $bodyArr.Length) + $bodyArr)
+    }
+    $key = [System.Security.Cryptography.RSA]::Create(2048)
+    $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new("CN={{ otlp_client_cert_tenant_id }}", $key, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $csrBytes = $req.CreateSigningRequest()
+    if ($csrBytes.Length -eq 0) { throw "CreateSigningRequest() returned 0 bytes" }
+    [System.IO.File]::WriteAllText("C:\Windows\Temp\otlp-client-{{ otlp_client_cert_tenant_id }}.csr", (ConvertTo-Pem $csrBytes "CERTIFICATE REQUEST"), [System.Text.Encoding]::ASCII)
+    $p = $key.ExportParameters($true)
+    $keyBytes = DerSequence @(
+      (DerInteger ([byte[]]@(0))),
+      (DerInteger $p.Modulus),
+      (DerInteger $p.Exponent),
+      (DerInteger $p.D),
+      (DerInteger $p.P),
+      (DerInteger $p.Q),
+      (DerInteger $p.DP),
+      (DerInteger $p.DQ),
+      (DerInteger $p.InverseQ)
+    )
+    if ($keyBytes.Length -eq 0) { throw "Manual PKCS1 DER encoding returned 0 bytes" }
+    [System.IO.File]::WriteAllText((Join-Path "{{ otlp_client_cert_dir }}" "client.key.new"), (ConvertTo-Pem $keyBytes "RSA PRIVATE KEY"), [System.Text.Encoding]::ASCII)
+  when: otlp_client_cert_issue | bool
+
+- name: Fetch the CSR back to the controller
+  ansible.builtin.fetch:
+    src: "C:\\Windows\\Temp\\otlp-client-{{ otlp_client_cert_tenant_id }}.csr"
+    dest: "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.csr"
+    flat: true
+  when: otlp_client_cert_issue | bool
+
+- name: Sign the CSR via cert-manager (tenant Issuer)
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      kubectl delete certificaterequest otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability --ignore-not-found=true
+      cat <<EOF2 | kubectl apply -f -
+      apiVersion: cert-manager.io/v1
+      kind: CertificateRequest
+      metadata:
+        name: otlp-vm-csr-{{ otlp_client_cert_tenant_id }}
+        namespace: observability
+      spec:
+        issuerRef:
+          name: otlp-issuer-{{ otlp_client_cert_tenant_id }}
+          kind: Issuer
+        duration: {{ otlp_client_cert_duration }}
+        request: {{ lookup('file', '/tmp/otlp-mtls-' + otlp_client_cert_tenant_id + '.csr') | b64encode }}
+        usages:
+          - client auth
+      EOF2
+      kubectl wait --for=condition=Ready certificaterequest/otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability --timeout=60s
+      kubectl get certificaterequest otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability -o jsonpath='{.status.certificate}' | base64 -d > /tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.crt
+      kubectl delete certificaterequest otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability --ignore-not-found=true
+  delegate_to: localhost
+  changed_when: true
+  when: otlp_client_cert_issue | bool
+
+- name: Copy the signed client certificate onto the VM
+  ansible.windows.win_copy:
+    src: "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.crt"
+    dest: "{{ otlp_client_cert_dir }}\\client.crt.new"
+  when: otlp_client_cert_issue | bool
+
+- name: Install the new key + certificate once they match
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = "Stop"
+    {{ otlp_client_cert_ps_helpers | indent(4) }}
+    $dir = "{{ otlp_client_cert_dir }}"
+    $newKey = Join-Path $dir "client.key.new"; $newCrt = Join-Path $dir "client.crt.new"
+    if ((Get-KeyModulus $newKey) -ne (Get-CertModulus $newCrt)) { throw "signed certificate does not match the new key" }
+    Move-Item -Force $newKey (Join-Path $dir "client.key")
+    Move-Item -Force $newCrt (Join-Path $dir "client.crt")
+  when: otlp_client_cert_issue | bool
+
+- name: Remove the CSR from the VM
+  ansible.windows.win_file:
+    path: "C:\\Windows\\Temp\\otlp-client-{{ otlp_client_cert_tenant_id }}.csr"
+    state: absent
+
+- name: Remove the CSR/certificate copies from the controller
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.csr"
+    - "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.crt"
+  delegate_to: localhost
+
+# F08: internal root CA that signed the Gateway's server certificate
+# (dnsNames include *.otlp.internal) - see linux.yml.
+- name: Read the internal root CA from the cluster
+  ansible.builtin.command:
+    # argv, not cmd: the command module's shlex splitting would drop the
+    # backslash in ca\.crt and the jsonpath would silently return nothing.
+    argv: [kubectl, get, secret, otel-gateway-server-cert, -n, observability, -o, 'jsonpath={.data.ca\.crt}']
+  delegate_to: localhost
+  register: otlp_client_cert_ca_b64
+  changed_when: false
+  failed_when: >-
+    otlp_client_cert_ca_b64.rc != 0 or
+    (otlp_client_cert_ca_b64.stdout | b64decode) is not search('-----BEGIN CERTIFICATE-----')
+
+- name: Install the internal root CA for server verification
+  ansible.windows.win_copy:
+    content: "{{ otlp_client_cert_ca_b64.stdout | b64decode }}"
+    dest: "{{ otlp_client_cert_dir }}\\ca.crt"
+  register: otlp_client_cert_ca_file
+
+- name: Report whether the collector needs a restart
+  ansible.builtin.set_fact:
+    otlp_client_cert_changed: "{{ (otlp_client_cert_issue | bool) or otlp_client_cert_ca_file.changed }}"

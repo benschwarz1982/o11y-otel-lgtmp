@@ -1,0 +1,47 @@
+---
+name: Image scan
+
+# trivy over the four CI images (OS packages + bundled Python/Go
+# dependencies). Informational, like the GitLab job (allow_failure): a
+# fixable HIGH/CRITICAL CVE marks the job with a warning annotation but
+# never blocks a deploy. Called after every image build and weekly from
+# security-scans.yml (new CVEs appear without a change here).
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  trivy:
+    name: trivy ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [base, terraform, ansible-linux, ansible-windows]
+    steps:
+      - id: image
+        env:
+          OVERRIDE: ${{ vars.CI_IMAGE_PREFIX }}
+          TARGET: ${{ matrix.target }}
+        run: echo "ref=${OVERRIDE:-ghcr.io/${GITHUB_REPOSITORY,,}/ci-tools}/${TARGET}:v1" | tee -a "$GITHUB_OUTPUT"
+      # Exit 2 = fixable HIGH/CRITICAL findings: informational, like the
+      # GitLab job (allow_failure). Any other failure (registry auth,
+      # missing image, DB download) fails the job.
+      - name: Scan
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rc=0
+          docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD ghcr.io/aquasecurity/trivy:0.76.2 \
+            image --image-src remote --exit-code 2 --severity HIGH,CRITICAL --ignore-unfixed "${REF}" || rc=$?
+          case "${rc}" in
+            0) ;;
+            2) echo "::warning title=Fixable HIGH/CRITICAL CVEs::${REF} - rebuild the CI images or bump the base image (see this step's log)" ;;
+            *) exit "${rc}" ;;
+          esac

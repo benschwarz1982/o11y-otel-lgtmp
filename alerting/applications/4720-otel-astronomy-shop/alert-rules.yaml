@@ -1,0 +1,164 @@
+---
+# UC3 - Kubernetes Microservices. Rules only - see alerting/README.md.
+# Requires 4720 to actually be onboarded. Grafana folder is 4720 -
+# same folder its own dashboard lives in.
+#
+# No error-rate/status-code label exists anywhere in this repo's span
+# metrics today (verified across every dashboard template and
+# collector config) - Tempo's metrics-generator spanmetrics processor
+# isn't configured with an error-status dimension in this repo. Latency
+# is the only demonstrable signal available for this Use Case until
+# that changes.
+#
+# Count-based, not percentile-based - found live this was the real,
+# structural bug behind every flapping/non-firing symptom chased
+# earlier (window size, service scoping, Mimir rate-limiting): this
+# Use Case's break (`intlShippingSlowdown`) only delays INTERNATIONAL
+# shipping addresses, so only a fraction of the shop's live traffic
+# (the load-generator's own mix of US/non-US checkouts, plus whatever
+# the presenter's own demo checkout adds) is ever actually slow at any
+# given moment. A p95-over-histogram_quantile query, reduced with
+# `last`, reflects whatever the single most recent request happened to
+# be - a fast, unaffected US checkout landing right after a slow one
+# immediately erases all trace of the ongoing problem, confirmed live
+# via Grafana's own /api/v1/eval (one call showed the real breach,
+# 0.5-1min later the identical replay showed a clean baseline value
+# again, with nothing about the underlying break having changed).
+# Worse, p95 specifically requires the slow fraction to exceed 5% of
+# traffic in-window to register at all - structurally unable to detect
+# a minority-of-requests problem by definition, regardless of window
+# size or reducer choice.
+#
+# Fixed by counting how many shipping requests were actually slow
+# (`traces_spanmetrics_latency_count` minus the cumulative count in
+# the `le="0.512"` bucket, both `increase()`'d over the same 3m window)
+# instead of asking "what's the current percentile" - every slow
+# request adds to the count and stays counted for the full 3m window
+# regardless of how many fast ones also happened alongside it,
+# structurally immune to the majority-dilutes-minority problem above.
+# relativeTimeRange 180s (matches the inner 3m increase() window) -
+# guarantees at least 2-3 consecutive 1m evaluation ticks see any given
+# slow request, satisfying the `for: 1m` sustained-duration check
+# reliably instead of by luck.
+#
+# service="shipping" filter - found live this was missing and caused a
+# related flapping bug on the old p95 query: without it, `sum by (le,
+# span_name)` grouped over EVERY span_name in the whole system, one
+# alert instance per name, several of them (browser_add_to_cart,
+# flagd.evaluation.v1.Service/EventStream, resolveBoolean, a bare
+# "HTTP POST") spiking for reasons unrelated to this Use Case. Kept
+# here (now filtering the count query, not a percentile) since it's
+# still the correct scope - this rule cares about the shipping
+# service's own latency specifically. Deliberately not applied to the
+# dashboard's own generic "Request Latency (p95) by Endpoint/
+# Operation" panel (shared `microservices-k8s.template.json`, used by
+# other tenants too, and still percentile-based there since it's a
+# human-readable overview across every endpoint, not a single alert
+# condition) - filtering by legend/series to POST /ship-order at read
+# time (see README.md's UC3 Runbook) is the right scope for that panel
+# instead.
+# `or vector(0)` on the query: no slow shipping requests must read 0,
+# not NoData. The flip side: missing span metrics (shop down, Tempo's
+# metrics-generator or Mimir not ingesting - including this tenant's
+# own daily budget throttling, which drops its metrics for hours) ALSO
+# read 0 / Normal. The second rule below makes that blind spot visible.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: 4720-otel-astronomy-shop
+    folder: "4720"
+    interval: 1m
+    rules:
+      - uid: alert-4720-latency-p95-high
+        title: "4720 OTel Astronomy Shop Demo - shipping requests slow"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 180, to: 0}
+            datasourceUid: mimir-4720-prod
+            model:
+              expr: (sum(increase(traces_spanmetrics_latency_count{service="shipping", span_name="POST /ship-order"}[3m])) - sum(increase(traces_spanmetrics_latency_bucket{service="shipping", span_name="POST /ship-order", le="0.512"}[3m]))) or vector(0)
+              instant: false
+              range: true
+              refId: A
+          # reduce stage - see 1286's alert-rules.yaml for why this is
+          # required (found live, missing on every rule in this repo).
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              # B is a count (slow requests in the last 3m), not a
+              # latency value - fires as soon as at least one shipping
+              # request exceeded 512ms (the le="0.512" bucket boundary
+              # in A's query, this repo's usual ~500ms demo threshold).
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        labels: {}
+        annotations:
+          summary: "UC3 - OTel Astronomy Shop Demo (4720) shipping requests slower than 500ms"
+          description: "At least one POST /ship-order request on tenant 4720 (Demo Use Case 3: Kubernetes Microservices) took longer than 500ms in the last 3 minutes - counted directly via traces_spanmetrics_latency_count/_bucket, not a percentile, since only a fraction of shipping traffic (international addresses) is ever affected at once."
+          # Links this rule to its own dashboard + panel - see 1286's
+          # alert-rules.yaml for why this is required (found live,
+          # missing on every rule in this repo). __dashboardUid__ is
+          # just "system-<system_id>" now, no "-<env>" suffix - found
+          # live this one still had a stale "-prod" left over from
+          # before the one-dashboard-per-system redesign dropped env
+          # from the dashboard uid entirely (see
+          # scripts/generate-system-dashboard.py), so the dashboard's
+          # alert-linked heart icon silently never rendered.
+          __dashboardUid__: "system-4720"
+          __panelId__: "71"
+
+      # Companion to the rule above (F12): fires when the shipping span
+      # metrics it depends on stop arriving - the rule above reads that
+      # as "no slow requests". Found live: these metrics have multi-hour
+      # gaps whenever the tenant's daily Mimir budget is exhausted and
+      # throttled - during those the latency alert is blind, and this
+      # rule says so. Not routed to OpenClaw - the notification policy
+      # matches alert names exactly.
+      - uid: alert-4720-shipping-metrics-missing
+        title: "4720 OTel Astronomy Shop Demo - shipping metrics missing"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: mimir-4720-prod
+            model:
+              expr: count(count_over_time(traces_spanmetrics_calls_total{service="shipping"}[15m])) or vector(0)
+              instant: true
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+              refId: C
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        labels: {}
+        annotations:
+          summary: "OTel Astronomy Shop Demo (4720) shipping metrics missing"
+          description: "No shipping span metrics from tenant 4720 for 15 minutes (shop down, trace pipeline broken, or the tenant's metrics budget throttled). The shipping latency alert can't detect anything meanwhile."

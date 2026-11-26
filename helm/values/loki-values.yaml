@@ -1,0 +1,143 @@
+---
+# Loki - Distributed Mode, minimal for demo on AKS
+deploymentMode: Distributed
+
+# Explicitly disable SimpleScalable targets, since we're using full Distributed mode
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+loki:
+  # F24/NFR-03: the rendered config embeds the Azure storage account
+  # key - kept in a Secret instead of the chart's default ConfigMap
+  # (readable by anyone allowed to read ConfigMaps in this namespace).
+  configStorageType: Secret
+  # Multi-tenancy for the onboarding process (see observability-otel-demo-onboarding
+  # repo) - Loki isolates data per X-Scope-OrgID, which the gateway's
+  # headers_setter extension sets from each client's own "tenant_id"
+  # header/metadata. Grafana's Loki datasource (grafana-values.yaml) is
+  # updated to match.
+  auth_enabled: true
+  commonConfig:
+    replication_factor: 1
+  server:
+    # Default 4MB gRPC message size is too small once cluster-wide container
+    # logs are actually flowing (fixed a receiver bug that had silently
+    # dropped almost all of them before) - a collector resending a backlog
+    # after restart can easily exceed it in a single batch.
+    grpc_server_max_recv_msg_size: 16777216
+    grpc_server_max_send_msg_size: 16777216
+  # accountName/accountKey are injected via Terraform set/set_sensitive
+  # (terraform/environments/observability-stack/main.tf's own
+  # helm_release.loki) - never written here. Not Workload Identity
+  # (useFederatedToken) despite Loki's chart genuinely exposing that
+  # field - found live, this subscription's restricted "Playground"
+  # sandbox denies the deploying Service Principal
+  # Microsoft.Authorization/roleAssignments/write on any scope, so the
+  # role grant a workload identity needs to actually read/write blobs
+  # can't be created here. Same account-key auth as every other backend
+  # in this repo instead.
+  storage:
+    type: azure
+    bucketNames:
+      chunks: loki-chunks
+      ruler: loki-ruler
+      admin: loki-admin
+    azure: {}
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: azure
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+  limits_config:
+    retention_period: 168h   # 7 days - enough for demo
+    reject_old_samples: false   # Demo: don't discard old log entries (e.g. on collector restart)
+    # Default 4MB/s ingestion rate is too low for a cluster-wide log backlog
+    # (e.g. right after a collector restart re-reads container logs from the
+    # start - there's no checkpoint storage configured for the filelog
+    # receiver yet). Bumped for a smoother demo experience, not for
+    # production-scale log volume.
+    ingestion_rate_mb: 16
+    ingestion_burst_size_mb: 32
+  # Budget enforcement for the onboarding process (see
+  # observability-otel-demo-onboarding repo's "Multi-Tenancy" section) -
+  # per-tenant limits computed from that tenant's manifest via
+  # scripts/calculate-ingestion-budget.py, overriding the generous
+  # limits_config demo defaults above per tenant. Empty here on purpose
+  # (IaC Roadmap milestone, done: 4087 used to get a static entry baked
+  # in at this deploy:observability-stack scope, existing before any
+  # onboarding happened - now it goes through the same onboarding-repo
+  # request/approval flow as every other tenant, its entry lives in
+  # loki-tenant-overrides.yaml like everyone else's, applied by
+  # deploy:tenants). Stays declared (even empty) so the `helm upgrade
+  # --reuse-values -f loki-tenant-overrides.yaml` step has a
+  # loki.runtimeConfig.overrides path to deep-merge into.
+  runtimeConfig:
+    overrides: {}
+  # NFR-15: without retention_enabled the compactor only compacts -
+  # retention_period (limits_config above, per tenant in
+  # loki-tenant-overrides.yaml) was never enforced and nothing was ever
+  # deleted. delete_request_store is required once retention is on.
+  # Deletes run retention_delete_delay (default 2h) after marking.
+  compactor:
+    retention_enabled: true
+    delete_request_store: azure
+distributor:
+  replicas: 1
+ingester:
+  replicas: 1
+  # Chart default is true regardless of commonConfig.replication_factor
+  # above - creates 3 separate zone-a/zone-b/zone-c ingester
+  # StatefulSets (1 replica each) designed for replication_factor: 3
+  # (one copy per zone). With replication_factor: 1 that mismatch is
+  # what caused a real, found-live "at least 1 live replicas required
+  # across different availability zones" error during a rolling
+  # restart - the ring couldn't satisfy zone-aware's multi-zone health
+  # check for a single-replica setup. Disabled to match this file's own
+  # "minimal for demo" replication_factor: 1 - also drops 2 of the 3
+  # ingester pods this was silently running.
+  zoneAwareReplication:
+    enabled: false
+  persistence:
+    enabled: true
+    # Was 10Gi - found live filling completely (0 bytes free) after
+    # ~3.5 days of this session's own demo/testing traffic (including
+    # repeated UC4 flood runs), wedging the ingester's graceful-shutdown
+    # flush loop in an infinite "no space left on device" retry loop
+    # against its own local WAL/shipper staging directory - not an S3/
+    # MinIO capacity issue (MinIO itself had 47GB free at the time).
+    # Doubled as a live fix (PVC online-resized, storage class supports
+    # it) and made permanent here, same pattern as the client-VM
+    # disk_size_gb fix elsewhere in this repo.
+    size: 20Gi
+querier:
+  replicas: 1
+queryFrontend:
+  replicas: 1
+queryScheduler:
+  replicas: 1
+indexGateway:
+  replicas: 1
+compactor:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+ruler:
+  replicas: 0
+
+gateway:
+  replicas: 1
+
+# No `minio:` block: the grafana-community loki chart (21.x) no longer
+# bundles MinIO, and its values schema rejects the key.
+
+test:
+  enabled: false

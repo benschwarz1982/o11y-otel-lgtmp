@@ -1,0 +1,18 @@
+---
+# Middleware/app tier - .NET/Spesenabrechnung (4722), run by the
+# fleet-4722-spesenabrechnung (--tags install) and
+# instrumentation-4722-spesenabrechnung (--tags instrument) CI jobs
+# against a one-host, freshly-generated inventory (see
+# ansible/inventory/generated.ini - not committed, written per run).
+# Reuses the platform_windows group onboard-platform-windows.yml
+# already targets - same vm-windows-demo host, no new inventory group
+# needed.
+#
+# Two tagged phases instead of two playbooks - see
+# roles/middleware-tomcat/tasks/main.yml's own comment for why.
+
+- name: Configure the Spesenabrechnung app (4722)
+  hosts: platform_windows
+  gather_facts: false
+  roles:
+    - middleware-dotnet

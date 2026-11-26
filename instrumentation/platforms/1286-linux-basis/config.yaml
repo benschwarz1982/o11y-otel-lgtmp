@@ -1,0 +1,174 @@
+---
+# instrumentation/platforms/1286-linux-basis/config.yaml
+#
+# Standard OTel Collector config for every Linux (RHEL-like) VM this
+# platform's fleet ever runs, regardless of what application/middleware
+# ends up deployed on it. Owned by the platform team - identical for
+# every Linux Basis VM, nothing to hand-tune per VM beyond the
+# variables below. Application/middleware telemetry is deliberately
+# NOT this file's concern: every app pushes its own OTLP straight to
+# the gateway with its own tenant_id (see instrumentation/middleware/),
+# so this platform template never needs editing when a new app gets
+# deployed onto a Linux VM.
+#
+# This is the single canonical copy - Ansible's `template` module
+# renders it directly (see ansible/roles/platform-linux/tasks/main.yml),
+# no separate mirror lives under ansible/roles/ anymore. Jinja2
+# variables to substitute at deploy time (passed as `-e` on the
+# `deploy-instrumentations:1286-linux-basis` CI job, or supply your own
+# when applying by hand - see README.md in this directory):
+#   {{ traefik_otlp_ip }}       - Traefik's internal LoadBalancer IP for the
+#                                 per-tenant mTLS OTLP entrypoint (NFR-04
+#                                 Phase 3 - replaces gateway_internal_ip
+#                                 for this file)
+#   {{ tenant_id }}             - this VM's own platform tenant (e.g. 1286-prod
+#                                 for Linux Basis) - NOT an application's
+#                                 tenant, this file never carries those
+#   {{ deployment_environment }} - this platform's env from its own manifest
+#                                 entry, e.g. "prod" (schema/core.yaml) -
+#                                 platform-scoped like tenant_id above, not
+#                                 an application's own env
+#
+# Installation (Ansible does all of this - see
+# ansible/roles/platform-linux/tasks/main.yml for the exact tasks):
+#   curl -L https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.166.0/otelcol-contrib_0.166.0_linux_amd64.rpm -o otelcol-contrib.rpm
+#   sudo dnf install -y --nogpgcheck ./otelcol-contrib.rpm
+#   sudo cp <rendered file> /etc/otelcol-contrib/config.yaml
+#   (--nogpgcheck matches Ansible's disable_gpg_check: true - the
+#   upstream release RPM isn't GPG-signed with a key this environment
+#   has imported, see README.md's Installation section for why)
+#
+#   IMPORTANT: systemd services do NOT automatically inherit shell environment
+#   variables (${env:HOSTNAME} would otherwise be empty and startup would fail).
+#   Before starting, create the following override. /etc/os-release is
+#   already in systemd EnvironmentFile syntax (KEY=value, no quoting
+#   surprises) - reusing it directly exposes NAME/VERSION_ID
+#   (${env:NAME}/${env:VERSION_ID} below) without parsing anything:
+#     sudo mkdir -p /etc/systemd/system/otelcol-contrib.service.d
+#     sudo tee /etc/systemd/system/otelcol-contrib.service.d/override.conf << 'OVERRIDE_EOF'
+#     [Service]
+#     Environment=HOSTNAME=%H
+#     EnvironmentFile=/etc/os-release
+#     OVERRIDE_EOF
+#     sudo systemctl daemon-reload
+#
+#   IMPORTANT: The otelcol-contrib service runs under its own system user
+#   (not root) and by default has no read permissions on
+#   /var/log/journal (the journald receiver otherwise fails with "insufficient
+#   permissions"). Before starting:
+#     sudo usermod -aG systemd-journal otelcol-contrib
+#
+#   sudo systemctl enable --now otelcol-contrib
+#
+# Prerequisite: network path to the OTel gateway (VNet peering + internal
+# LoadBalancer service traefik-otlp-internal in AKS, port 14317), see README.md.
+
+receivers:
+  # Host metrics (CPU, Memory, Disk, Network, Load) - deliberately NOT
+  # "processes" (per-process series, one full metric set per running
+  # process on the host - unbounded cardinality that scales with
+  # whatever happens to be running, not with anything this platform's
+  # dashboard actually uses). Found live: with ~130 processes on a
+  # demo VM, this alone pushed the platform tenant's per-scrape sample
+  # count to 2500-3300+, blowing through its ingestion_burst_size and
+  # causing the gateway to 429/drop data - collateral damage for
+  # whatever else shared its export queue at the time.
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      memory: {}
+      disk: {}
+      filesystem: {}
+      network: {}
+      load: {}
+
+  # Systemd journal (RHEL-native logs instead of classic syslog files)
+  journald:
+    directory: /var/log/journal
+    all: true
+
+processors:
+  batch:
+    send_batch_size: 8192
+    timeout: 5s
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  resource/host:
+    attributes:
+      - key: host.name
+        value: ${env:HOSTNAME}
+        action: upsert
+      - key: service.namespace
+        value: linux-agent
+        action: upsert
+      - key: service.name
+        value: rocky-hostmetrics
+        action: upsert
+      - key: os.type
+        value: linux
+        action: upsert
+      # Real distro/release, for the "OS Release" panels on this
+      # platform's dashboard (lifecycle overview at fleet scale) - from
+      # /etc/os-release via the EnvironmentFile in the systemd override
+      # above, not guessed/hardcoded.
+      - key: os.name
+        value: ${env:NAME}
+        action: upsert
+      - key: os.version
+        value: ${env:VERSION_ID}
+        action: upsert
+      # schema/core.yaml's Core Schema - static per this platform
+      # template, doesn't vary per tenant.
+      - key: platform.type
+        value: linux
+        action: upsert
+      - key: platform.vendor
+        value: rocky
+        action: upsert
+      - key: deployment.environment
+        value: "{{ deployment_environment }}"
+        action: upsert
+
+exporters:
+  # NFR-04 mTLS rollout, Phase 3 client migration (README "Open
+  # Points") - routed via Traefik's SNI entrypoint straight to this
+  # tenant's own dedicated receiver on the Gateway, presenting the
+  # client cert ansible/roles/platform-linux/tasks/main.yml generates
+  # and gets signed (client.crt/client.key under /etc/otelcol-contrib/tls,
+  # never transiting the network as a private key - see
+  # ansible/roles/otlp_client_cert). tenant_id is no longer sent as a
+  # client-asserted header - the receiving port itself is what the
+  # Gateway trusts as this tenant's identity. The Gateway's server
+  # certificate is verified against the internal root CA (ca.crt) under
+  # the SNI name below, which the certificate covers via *.otlp.internal
+  # (F08).
+  otlp/host:
+    endpoint: "{{ traefik_otlp_ip }}:14317"
+    tls:
+      cert_file: /etc/otelcol-contrib/tls/client.crt
+      key_file: /etc/otelcol-contrib/tls/client.key
+      ca_file: /etc/otelcol-contrib/tls/ca.crt
+      server_name_override: "{{ tenant_id }}.otlp.internal"
+    # Detect a silently dead connection (e.g. the Azure LB flow is gone
+    # after an AKS node reimage) within ~40 s and reconnect, instead of
+    # retrying into it with DeadlineExceeded until a restart. The
+    # Gateway's tenant receiver permits pings every >= 10 s (see
+    # scripts/provision.py).
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, resource/host, batch]
+      exporters: [otlp/host]
+    logs:
+      receivers: [journald]
+      processors: [memory_limiter, resource/host, batch]
+      exporters: [otlp/host]

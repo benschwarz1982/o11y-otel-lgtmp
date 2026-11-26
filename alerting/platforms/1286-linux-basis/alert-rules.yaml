@@ -1,0 +1,84 @@
+---
+# UC1 - Linux CPU Saturation. Rules only - see alerting/README.md.
+# Requires 1286 to actually be onboarded (datasourceUid
+# mimir-1286-prod must resolve). Grafana folder is 1286 - same folder
+# its own dashboard lives in, see alerting/README.md.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: 1286-linux-basis
+    folder: "1286"
+    interval: 1m
+    rules:
+      - uid: alert-1286-host-cpu-high
+        title: "1286 Linux Basis - host CPU > 80%"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mimir-1286-prod
+            model:
+              expr: 100 * (1 - (sum by (host_name) (rate(system_cpu_time_seconds_total{state="idle"}[1m])) / sum by (host_name) (rate(system_cpu_time_seconds_total[1m]))))
+              instant: false
+              range: true
+              refId: A
+          # Missing on every alert rule in this repo until found live
+          # while building the Demo Runbook - a range query (A) can't
+          # go straight into a threshold expression, Grafana errored
+          # every single rule with "looks like time series data, only
+          # reduced data can be alerted on" (or, for multi-series
+          # queries, "frame cannot uniquely be identified by its
+          # labels"). `reduce` collapses A's time range down to one
+          # value per series (last = the most recent point) before C
+          # thresholds it - the `for: 1m` duration requirement below
+          # is what actually needs 1 consecutive minute of breach,
+          # not this reducer.
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [80]}
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        # runbook_key: consumed by alerting/shared/openclaw-webhook.yaml's
+        # notification template (README Open Points - ai-ops-azure
+        # integration) - the exact filename OpenClaw looks up under
+        # workspace/runbooks/<Runbook-Key>.md. A static label here, not
+        # derived from this rule's own (human-readable, punctuation-
+        # heavy) title, since the two need to vary independently. Naming
+        # convention: "<system_id>-<system-slug>-<condition>", matching
+        # this repo's own "<system_id>-<system-slug>" convention used
+        # elsewhere (datasources, dashboards). Matches
+        # /sre/runbooks/1286-linux-basis-hostcpuhigh.md, which mirrors
+        # demo:uc1-fix's own remediation commands - this alert
+        # demonstrates OpenClaw's autoremediation path.
+        labels:
+          runbook_key: 1286-linux-basis-hostcpuhigh
+        annotations:
+          summary: "UC1 - Linux Basis (1286) host CPU above 80% for 1m"
+          description: "Host CPU on tenant 1286 (Linux Basis, Demo Use Case 1: Linux CPU Saturation) has been above 80% for at least 1 minute."
+          # Links this rule to its own system dashboard + the specific
+          # panel it's about - found live this was missing on every
+          # rule in this repo: the Alerting page's own "Dashboards"
+          # filter found nothing for 1286 (or any tenant) without it,
+          # and the dashboard's built-in "Annotations & Alerts" query
+          # can't scope a firing marker to the right panel either,
+          # since the state-change annotations Grafana generates
+          # inherit whatever dashboard/panel the rule itself points at.
+          # __dashboardUid__ is just "system-<system_id>" now, no
+          # "-<env>" suffix - found live this one still had a stale
+          # "-prod" left over from before the one-dashboard-per-system
+          # redesign dropped env from the dashboard uid entirely.
+          __dashboardUid__: "system-1286"
+          __panelId__: "11"

@@ -1,0 +1,3099 @@
+---
+# Deploy/destroy pipeline for the observability stack (AKS). Every job
+# name is prefixed `<stage>:<name>` (one deliberate exception: `pages`, a hard
+# GitLab convention, not a style choice - see that job's own comment) -
+# stage order:
+#   - "validate" lints everything (yamllint/shellcheck/ruff/ansible-lint/
+#     manifest-schema/terraform fmt+validate/hadolint/kubeconform) and
+#     scans it (gitleaks secret scan, trivy misconfiguration scan,
+#     pip-audit on the pinned Python requirements),
+#     independent of the stages below. Placed first so
+#     a lint/schema problem is caught before anything else even starts;
+#     on a web-sourced "Run pipeline" every validate:* job runs
+#     unattended regardless of what changed (see each job's own rules).
+#   - "build" plans the infra change (build:terraform-plan) and also
+#     (re)builds the 4 pre-built images every azure-cli-based job below
+#     pulls from instead of bootstrapping its own tools at run time
+#     (build:ci-image-* - see ci/images/Dockerfile's own header for why).
+#     build:terraform-plan runs unattended on both a push and a
+#     web-sourced run; build:ci-image-* runs unattended only on a push
+#     that actually touches ci/images/Dockerfile, and stays a manual,
+#     optional (`allow_failure: true`) button on a web-sourced run - a
+#     full manual "Run pipeline" is normally for exercising the rest of
+#     the pipeline, not for rebuilding images nothing else in that run
+#     actually needs.
+#   - "deploy" carries out: deploy:infra (AKS/network) then
+#     deploy:observability-stack (LGTM stack - platform-scoped Grafana
+#     content only: shared dashboards, the one genuinely tenant-agnostic
+#     datasource), `needs:` chained in that order (see
+#     deploy:observability-stack's own comment). deploy:infra is
+#     `when: manual` on both web and push - an operator decision, check
+#     build:terraform-plan's own output first - but on a web-sourced
+#     "Run pipeline" deploy:observability-stack itself is unattended:
+#     the moment deploy:infra is manually triggered there and succeeds,
+#     it follows automatically with no second click (on push it stays
+#     `when: manual` too, gated on its own `changes:` filter, same as
+#     every other manual job here). Both are Terraform-managed
+#     (terraform/environments/demo,
+#     terraform/environments/observability-stack + observability-stack-crs
+#     respectively) - deploy:observability-stack runs two sequential
+#     `terraform apply`s in one job, see that job's own comment for why
+#     it's not two jobs.
+#   - "deploy-fleets" provisions the demo fleet: nine deploy-fleets:*
+#     jobs, the demo VMs/apps - provisioning only, deliberately no
+#     telemetry yet.
+#   - "deploy-instrumentations" adds telemetry on top: nine
+#     deploy-instrumentations:* jobs, mirrored 1:1 with deploy-fleets:*,
+#     adding OTel instrumentation on top of what deploy-fleets:* already
+#     provisioned. "Only for the demo" - stands in for what would be each
+#     platform/application's own repo pipeline doing self-service
+#     instrumentation in reality.
+#
+#     The deploy-fleets:*/deploy-instrumentations:* jobs are staged in
+#     dependency tiers, ID-named: platform-basis (1229/1286/1294/4015,
+#     only need deploy:observability-stack) -> the applikationen tier that builds
+#     on a specific base (4711/4720/4721/4722 - 4711 doubles as the
+#     erweiterungen tier too via the underlying 1295+4711 script, see
+#     that script's own comment for why). Each deploy-instrumentations:*
+#     job only needs its own deploy-fleets:* job - unlike an earlier
+#     version of this pipeline, an application-tier
+#     deploy-instrumentations:* job does NOT need its base tier's own
+#     deploy-instrumentations:* job anymore: every application pushes its
+#     own OTLP straight to the gateway with its own tenant
+#     (instrumentation/middleware/), it no longer relays through a local platform
+#     collector, so there's nothing left for the platform's own
+#     instrumentation step to provide it. Ordering
+#     between all of these jobs is expressed via `needs:` (GitLab DAG)
+#     across the deploy-fleets/deploy-instrumentations stage boundary,
+#     not via extra stages per tier - each `needs:` target is
+#     `optional: true` so any job can also be run standalone (e.g. only
+#     re-instrumenting one system
+#     against an already-provisioned fleet).
+#   - "tenants" (IaC Roadmap milestone, done - folded in from the
+#     now-retired observability-otel-demo-onboarding repo) carries out
+#     a platform/application owner's self-service request
+#     (form -> tenants:create-mr -> MR -> review -> tenants:apply,
+#     reconciling every manifest's Mimir/Loki ingestion budgets, Grafana
+#     datasources/dashboards, and the gateway's tenant allowlist - see
+#     README.md#onboarding) -> tenants:rollout, in the same
+#     pipeline (needs: + a matching rule, see that job's own comment).
+#     tenants:rollout's own Terraform state also deploys the 5 demo
+#     alert rules now (moved from deploy:observability-stack - see
+#     terraform/environments/tenants/main.tf's own comment) - fixed,
+#     hand-authored content, not manifest-generated like the rest of
+#     this stage, but rolled out on the same cadence since they're
+#     pinned to these same onboarded systems.
+#     Deliberately decoupled from the deploy-fleets/deploy-instrumentations
+#     stages - can run any time a manifest actually gets merged, not tied
+#     to when the fleet happens to be (re)provisioned.
+#   - "destroy" mirrors "deploy"/"deploy-fleets"/"tenants" in reverse:
+#     destroy:*/destroy:tenants -> destroy:observability-stack ->
+#     destroy:infra. Unlike deploy, this is a real dependency chain, not
+#     just decoupled manual jobs: the six destroy:* fleet-teardown jobs
+#     and destroy:tenants stay independent/freely runnable (no `needs:`)
+#     - the two demo VMs and the Filestorage Storage Account aren't part
+#     of the AKS cluster or Terraform state, so their destroy:* jobs are
+#     the only way to clean them up regardless of what happens to the
+#     cluster - but destroy:observability-stack needs all seven of them
+#     (optional: true, so it's still runnable standalone) and
+#     destroy:infra needs destroy:observability-stack in turn.
+#     destroy:observability-stack also needs deploy:observability-stack
+#     (optional: true too) - on an ordinary pipeline where
+#     deploy:observability-stack's own rules don't even create it, this
+#     is a no-op exactly like the other seven; on a web-sourced "Run
+#     pipeline" (where deploy:observability-stack is at least present,
+#     see "deploy" above) it becomes a real gate: destroy:observability-stack
+#     only becomes runnable once that same pipeline's own
+#     deploy:observability-stack has actually succeeded - a same-pipeline
+#     "deploy, verify, tear down" smoke-test flow, see that job's own
+#     comment.
+#     destroy:tenants specifically must run before
+#     destroy:observability-stack, not after (unlike the fleet-teardown
+#     jobs, order doesn't matter among those) - its gateway CR's
+#     null_resource shells out to `kubectl delete opentelemetrycollector`
+#     on destroy, which needs the OpenTelemetryCollector CRD schema
+#     observability-stack's own Helm release installs to still be
+#     present, mirroring the same CRD-must-exist-first reasoning the
+#     deploy-side ordering already has (see terraform/README.md). Found
+#     live: without the fleet-teardown/observability-stack ordering it's
+#     easy to end up with orphaned resources the fleet-teardown scripts
+#     don't know about
+#     (e.g. each demo VM's NSG, created implicitly by `az vm create` and
+#     not cleaned up by the original destroy-fleet-1286-linux-basis.sh/
+#     destroy-fleet-1229-windows-basis.sh scripts at the time - since
+#     fixed) - forcing the fleet-teardown tier to run first, every time,
+#     catches gaps like that instead of the AKS cluster deletion
+#     silently working around them. No separate destroy jobs mirroring
+#     deploy-instrumentations:* - destroying the underlying deploy-fleets:*
+#     resource (VM, namespace) already takes whatever
+#     deploy-instrumentations:* added down with it. destroy:* jobs never
+#     get a `changes:` filter (see below) - tearing something down isn't
+#     tied to what changed in a given push. They do have two narrow
+#     `when: never` exclusions ahead of that unconditional availability
+#     (an onboarding MR-merge push, and tenants:apply's own follow-up
+#     push) - see .destroy_fleet's own comment.
+#
+# Most jobs run only when relevant files changed (`rules: changes:`),
+# to keep routine pushes from cluttering the pipeline view with buttons
+# for things that don't apply - see each job's own `rules:` for exactly
+# which paths it watches. To force the *entire* pipeline to appear
+# regardless (a "complete start"), start it manually via GitLab's own
+# "Run pipeline" page (Pipelines > Run pipeline) - every job's rules
+# include an `if: '$CI_PIPELINE_SOURCE == "web"'` branch ahead of its
+# changes-filtered one specifically for this. Every job that's meant to
+# stay manual (everything except validate:*/build:terraform-plan/pages/
+# tenants:apply, which are meant to run unattended) needs `when:
+# manual` on THIS branch too, not just the push-triggered one below it -
+# found live: without it, GitLab's rules default to `when: on_success`,
+# so a "complete start" via Run pipeline auto-ran deploy:infra instead of
+# just making it available to click. destroy:* jobs are the one
+# exception: always available, no changes: filter at all (see above,
+# aside from the two narrow onboarding-related exclusions).
+#
+# Every `changes:`-filtered rule's own `if:` explicitly includes
+# `$CI_PIPELINE_SOURCE == "push"` (not just `$CI_COMMIT_BRANCH ==
+# $CI_DEFAULT_BRANCH`) - found live: `rules: changes:` has no real git
+# diff to compare against for a pipeline with no actual push event
+# (trigger-API pipelines, e.g. tenants:create-mr's own pipeline;
+# also true for scheduled/tag pipelines), so GitLab evaluates it as
+# unconditionally true in that case - every `changes:`-gated job across
+# the *entire* pipeline showed up on what should have been a narrowly
+# scoped tenants:create-mr trigger call, not just that one job.
+# Restricting the branch-comparison rule to genuine push events avoids
+# this entirely (GitLab's own documented recommendation for this
+# exact gotcha).
+#
+# Prerequisite: CI/CD variables AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+# AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID (AZURE_CLIENT_SECRET masked+protected) -
+# the Service Principal is ALWAYS created by hand via "az ad sp create-for-rbac",
+# never by this pipeline (see README.md section A3). Access to the AKS
+# cluster is fetched dynamically via "az aks get-credentials" instead of via
+# a static kubeconfig secret - previously that would go stale every time the
+# cluster was recreated via Terraform.
+#
+# Optional: CI/CD variables CERT_MANAGER_CLIENT_ID, CERT_MANAGER_CLIENT_SECRET
+# (CERT_MANAGER_CLIENT_SECRET masked+protected) - also ALWAYS created by hand
+# via "az ad sp create-for-rbac" (README section A6, only needs the already
+# existing DNS zone, no "deploy:infra" required).
+# Without these two variables, terraform/environments/observability-stack/
+# skips the azuredns-config secret and observability-stack-crs skips the
+# ClusterIssuer/Certificate/IngressRoute entirely (both keyed off
+# cert_manager_client_id being empty), but the rest of
+# deploy:observability-stack still runs through.
+#
+# The azurerm/azuread Terraform provider only picks up credentials
+# automatically via HashiCorp's own ARM_* naming convention - .terraform_init
+# therefore briefly maps the AZURE_* variables to ARM_* before Terraform
+# runs.
+#
+# Every job that runs "pip install" creates and activates a venv first
+# (python3 -m venv .venv && . .venv/bin/activate) - a standing convention
+# for this file, not just to silence pip's "running as root" warning:
+# each job's container is single-use and destroyed after the job anyway,
+# so the venv doesn't protect anything a system-wide install wouldn't
+# already be safe doing here - it's kept for consistency across every
+# Python-using job regardless of base image. Also upgrades pip itself
+# right after (negligible cost, a few hundred KB) purely to silence its
+# own "new release available" notice in every job's log. What gets
+# installed is never named inline: every job installs a fully pinned
+# ci/requirements/<set>.txt (see that directory's README for how to
+# regenerate one) - validate:python-deps audits all of them.
+#
+# CONFIRM_DESTROY=yes (CI/CD variable, set only on the "Run pipeline" form)
+# is required by every destroy:* job - a plain safety gate against
+# accidental manual-job clicks.
+
+# Self-service requests (form/index.html opens GitLab's "Run pipeline"
+# page with SYSTEM_ID / UPDATE_SYSTEM_ID / OFFBOARDING_SYSTEM_ID
+# prefilled) run as ordinary "web" pipelines on main. Every job except
+# validate:yaml, validate:manifests and the three tenants:*-mr jobs
+# starts its rules with this reference, so such a pipeline contains only
+# those - not the builds, plans and manual deploy/demo jobs a plain web
+# run offers. (They used to be "trigger" pipelines, kept apart by
+# source; the public trigger token is gone.)
+.skip_self_service_requests:
+  rules:
+    - if: '$SYSTEM_ID || $UPDATE_SYSTEM_ID || $OFFBOARDING_SYSTEM_ID'
+      when: never
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # Only "push" on main - a bare branch check would admit every
+    # source on main, "trigger" included.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    # No "trigger" source: the self-service form used to start pipelines
+    # with a pipeline trigger token embedded in its public page. It now
+    # opens GitLab's own "Run pipeline" page (pipeline source "web"), so
+    # every request is made by an authenticated project member - see
+    # form/index.html. "api" is the same request scripted with the
+    # caller's own token (README, Onboarding Process) - only for
+    # self-service requests.
+    - if: '$CI_PIPELINE_SOURCE == "api" && ($SYSTEM_ID || $UPDATE_SYSTEM_ID || $OFFBOARDING_SYSTEM_ID)'
+    # Pipeline schedules exist for exactly two jobs: validate:python-deps
+    # and build:ci-image-scan (a new CVE shows up without any change in
+    # this repo). Every other job's rules name
+    # the pipeline sources they run on explicitly, and none of them names
+    # "schedule" - keep it that way when adding a job, or it starts
+    # running unattended on every schedule.
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+
+stages:
+  - validate
+  - build
+  - deploy
+  - deploy-fleets
+  - deploy-instrumentations
+  - deploy-aiops
+  - tenants
+  - demo
+  - destroy
+
+default:
+  tags:
+    - otel-demo
+
+variables:
+  KUBE_NAMESPACE: observability
+  AZURE_RESOURCE_GROUP: rg-bensc-001
+  AKS_CLUSTER_NAME: aks-otel-demo
+  TF_STATE_NAME: demo
+  TF_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}"
+
+# ---------------------------------------------------------------------------
+# build stage (ci-image-* part) - builds/pushes the 4 images
+# ci/images/Dockerfile defines, straight to this project's own GitLab
+# Container Registry, alongside build:terraform-plan further below (same
+# stage, unrelated to each other - no needs: between them).
+# $CI_REGISTRY/$CI_REGISTRY_IMAGE/$CI_REGISTRY_USER/$CI_REGISTRY_PASSWORD
+# are GitLab predefined variables, automatically available in every job
+# for this project's own registry - unlike AZURE_*/CERT_MANAGER_* above,
+# no manual CI/CD variable setup needed (same
+# gitlab-ci-token/$CI_JOB_TOKEN pattern tenants:rollout's own Terraform
+# HTTP backend config already uses, just for the registry instead of
+# Terraform state). Kaniko, not Docker-in-Docker: no dind/privileged-mode
+# usage exists anywhere else in this repo/runner config, and Kaniko is
+# the standard rootless option for building images from inside a regular
+# (non-privileged) CI job.
+#
+# Unattended (no `when: manual`) on a real change to ci/images/Dockerfile
+# on a push to main - nothing else about that push needs asking. On a
+# web-sourced "Run pipeline" (this repo's existing "force the whole
+# pipeline to appear" escape hatch, see this file's own top comment)
+# these stay `when: manual` + `allow_failure: true` instead: a full
+# manual run is normally for exercising the rest of the pipeline
+# (onboarding, a demo, a destroy), not for rebuilding images that
+# haven't changed - available to click, never forced, never blocks
+# anything else in that run if left unclicked.
+.build_ci_image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - >
+      echo "{\"auths\":{\"${CI_REGISTRY}\":{\"username\":\"${CI_REGISTRY_USER}\",\"password\":\"${CI_REGISTRY_PASSWORD}\"}}}"
+      > /kaniko/.docker/config.json
+    # --cache/--cache-repo: all 4 targets share the base/terraform
+    # stages (see ci/images/Dockerfile's own FROM chain) - without
+    # this, every build:ci-image-* job would re-execute those shared
+    # stages from scratch instead of reusing what an earlier job in
+    # the same chain already built.
+    - >
+      /kaniko/executor
+      --context "${CI_PROJECT_DIR}/ci/images"
+      --dockerfile "${CI_PROJECT_DIR}/ci/images/Dockerfile"
+      --target "${CI_IMAGE_TARGET}"
+      --destination "${CI_REGISTRY_IMAGE}/ci-tools/${CI_IMAGE_TARGET}:v1"
+      --cache=true
+      --cache-repo "${CI_REGISTRY_IMAGE}/ci-tools/cache"
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - ci/images/Dockerfile
+
+# Chained via needs: (base -> terraform -> {ansible-linux,
+# ansible-windows} in parallel), not all 4 fully parallel - found live:
+# since every --target build independently walks the FULL stage chain
+# from the top, 4 parallel jobs each redundantly rebuilt the shared
+# base/terraform stages AND raced to push the exact same --cache-repo
+# tag for them at once. Kaniko's cache push has no documented
+# concurrency guarantee for that (multiple known upstream issues about
+# --cache-repo not being reliably reused across parallel/concurrent
+# builds against the same registry), and Kaniko stops consulting the
+# cache entirely for the rest of a build after its first miss - so one
+# lost race poisoned the whole job's caching, not just that one layer.
+# needs: makes each shared stage build+push exactly once per pipeline
+# run before anything depending on it starts, at the cost of losing
+# 4-way parallelism - acceptable here since this stage only ever runs
+# on a real Dockerfile change, not on every pipeline.
+build:ci-image-base:
+  extends: .build_ci_image
+  variables:
+    CI_IMAGE_TARGET: base
+
+build:ci-image-terraform:
+  extends: .build_ci_image
+  needs: ["build:ci-image-base"]
+  variables:
+    CI_IMAGE_TARGET: terraform
+
+# ansible-core==2.21.3 pinned in ci/images/Dockerfile - read straight
+# from a real build of this job's own `pip install ansible-core` log
+# output (Kaniko prints it, unlike the old job-level
+# `pip install --quiet`), not guessed.
+build:ci-image-ansible-linux:
+  extends: .build_ci_image
+  needs: ["build:ci-image-terraform"]
+  variables:
+    CI_IMAGE_TARGET: ansible-linux
+
+# Same live-verified pin as ansible-linux above, plus pywinrm==0.5.0.
+build:ci-image-ansible-windows:
+  extends: .build_ci_image
+  needs: ["build:ci-image-terraform"]
+  variables:
+    CI_IMAGE_TARGET: ansible-windows
+
+# Vulnerability scan (trivy) of the 4 images just built - OS packages
+# and the Python/Go dependencies baked into them. allow_failure: these
+# images inherit whatever mcr.microsoft.com/azure-cli ships, so a
+# HIGH/CRITICAL CVE with an available fix is something to look at, not
+# something that should block the deploy jobs. --ignore-unfixed: only
+# report what an image rebuild/base bump can actually resolve.
+# TRIVY_USERNAME/TRIVY_PASSWORD: same predefined registry credentials
+# .build_ci_image pushes with. On a web-sourced run the build jobs are
+# manual (see .build_ci_image), so this one is too and scans whatever
+# :v1 currently is, without waiting for a rebuild (needs: []). Same on
+# a pipeline schedule, just unattended.
+# --image-src remote: pull from the registry, never the runner's local
+# docker cache - found live: trivy's default order (docker first) picked
+# up stale :v1 images (Azure Linux 3) instead of the freshly pushed ones.
+build:ci-image-scan:
+  stage: build
+  image:
+    name: ghcr.io/aquasecurity/trivy:0.76.2
+    entrypoint: [""]
+  needs: ["build:ci-image-ansible-linux", "build:ci-image-ansible-windows"]
+  allow_failure: true
+  variables:
+    TRIVY_USERNAME: "${CI_REGISTRY_USER}"
+    TRIVY_PASSWORD: "${CI_REGISTRY_PASSWORD}"
+  script:
+    - |
+      rc=0
+      for target in base terraform ansible-linux ansible-windows; do
+        echo "== ${target}"
+        trivy image --image-src remote --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "${CI_REGISTRY_IMAGE}/ci-tools/${target}:v1" || rc=1
+      done
+      exit $rc
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      needs: []
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      needs: []
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - ci/images/Dockerfile
+
+validate:yaml:
+  stage: validate
+  image: alpine:3.24.4
+  script:
+    - apk add --no-cache yamllint
+    # Found live, twice already (see validate:python/validate:shell's
+    # own comments for the same class of gap): a directory-scoped
+    # invocation silently misses real content anywhere else - here it
+    # missed all of examples/*.yaml and even .gitlab-ci.yml itself
+    # (which does get real value out of this: turned up a genuine
+    # missing "---" once actually checked). Whole repo instead.
+    - >
+      yamllint -d "{extends: default, rules: {line-length: disable}}"
+      .
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "**/*.yaml"
+        - "**/*.yml"
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && ($SYSTEM_ID || $UPDATE_SYSTEM_ID || $OFFBOARDING_SYSTEM_ID)'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - "**/*.yaml"
+        - "**/*.yml"
+
+validate:shell:
+  stage: validate
+  image: koalaman/shellcheck-alpine:stable
+  script:
+    # scripts/ has held zero .sh files since deploy-tenants.sh (the
+    # last one) moved to Terraform - the remaining shell scripts used
+    # to live under examples/tomcat-demo-app/ only, which is what this
+    # job originally checked - found live: that missed
+    # terraform/environments/demo/init.sh and
+    # ansible/roles/middleware-tomcat/files/tomcat-traffic-generator.sh
+    # entirely, in any pipeline, ever (same class of gap as
+    # validate:python's own scripts/*.py-only glob, see Known
+    # Pitfalls). find instead of a glob, to actually cover the whole
+    # repo and not silently miss a future .sh file added anywhere else.
+    - find . -name "*.sh" -not -path "./.git/*" -exec shellcheck {} +
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "**/*.sh"
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - "**/*.sh"
+
+validate:python:
+  stage: validate
+  image: python:3.15.2-slim
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    # Pinned (ci/requirements/python-lint.txt), like every other tool
+    # version in this pipeline - an unpinned ruff picked up new default
+    # rules (RUF013, BLE001) from an upstream release and would have
+    # failed this job with no code change on this repo's side.
+    - pip install --quiet -r ci/requirements/python-lint.txt
+    # Found live: scripts/*.py only ever covered scripts/ itself - a
+    # non-recursive, single-directory glob - so instrumentation/platforms/object-storage/
+    # workload.py (the only other .py file in this repo) silently never
+    # got linted at all, in any pipeline, ever. Check the whole repo
+    # instead - ruff already skips .git/venvs/etc. on its own.
+    - ruff check .
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - "**/*.py"
+        - ci/requirements/python-lint.txt
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - "**/*.py"
+        - ci/requirements/python-lint.txt
+
+# G03/G04/G08: rules/ in sync with its sources (OpenSLO files in slo/,
+# manifests, services/business-services.yaml - scripts/generate-rules.py
+# --check, with Sloth) and correct (scripts/test-rules.py: promtool check
+# rules, the tenants' unit tests and calendar cases). Sloth and promtool
+# come with the CI image (ci/images/Dockerfile); an image built before
+# they were added makes this job exit 77 = warning, not a silent pass.
+validate:rules:
+  # Stage build, not validate: it needs the (re)built CI image of this
+  # same pipeline, and needs: can't point at a later stage.
+  stage: build
+  image: $CI_REGISTRY_IMAGE/ci-tools/terraform:v1
+  needs:
+    - job: build:ci-image-terraform
+      optional: true
+  allow_failure:
+    exit_codes: [77]
+  script:
+    - python3 -c 'import yaml' 2>/dev/null || tdnf install -y -q python3-pyyaml >/dev/null
+    - |
+      if ! command -v sloth >/dev/null || ! command -v promtool >/dev/null; then
+        echo "CI image has no sloth/promtool yet (rebuilt by build:ci-image-terraform on main) - rules NOT validated"
+        exit 77
+      fi
+    - python3 scripts/generate-rules.py --check
+    - python3 scripts/test-rules.py
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: &rules_paths
+        - rules/**/*
+        - slo/**/*
+        - services/**/*
+        - manifests/**/*
+        - scripts/generate-rules.py
+        - scripts/test-rules.py
+        - ci/images/Dockerfile
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: *rules_paths
+
+# ansible-lint, not just validate:yaml's yamllint above - checks
+# Ansible-specific idioms (undefined-looking module refs, deprecated
+# syntax, etc.), not just YAML syntax. Config: ansible/.ansible-lint
+# (two rules skipped there, see that file's own comments for why).
+# ansible.windows collection installed explicitly (not the full
+# "ansible" pip package) so roles/middleware-dotnet's/platform-windows's
+# win_* modules resolve, same collection baked into the
+# ci-tools/ansible-windows image (see ci/images/Dockerfile) the
+# deploy-instrumentations:*-windows-basis jobs use.
+validate:ansible:
+  stage: validate
+  image: python:3.15.2-slim
+  # Installs the full "ansible" pip package, not ansible-core - it
+  # bundles ansible.windows already (needed to resolve
+  # roles/middleware-dotnet's/platform-windows's win_* modules), no
+  # separate `ansible-galaxy collection install` call needed. Found
+  # live: that call kept hitting galaxy.ansible.com outages here
+  # ("Missing expected 'results' in ansible-galaxy cache", then "HTTP
+  # Code: 502, Bad Gateway" even with --no-cache and retry: 2) - this
+  # sidesteps the Galaxy network dependency entirely for a job that only
+  # needs the collection to resolve module names, not track its latest
+  # version.
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/ansible-lint.txt
+    # GitLab's docker executor checks out the repo world-writable, so
+    # Ansible refuses to load ansible/ansible.cfg from it at all
+    # ("Ansible is being run in a world writable directory... ignoring
+    # it as an ansible.cfg source") - a security check on Ansible's own
+    # side, no config setting can suppress the warning (it fires before
+    # config is even loaded). Fixed at the source instead of ignoring
+    # it: strip the world-write bit so the check passes and the file
+    # actually loads.
+    - chmod o-w ansible
+    - cd ansible && ansible-lint
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ansible/**/*
+        - ci/requirements/ansible-lint.txt
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - ansible/**/*
+        - ci/requirements/ansible-lint.txt
+
+validate:manifests:
+  stage: validate
+  image: python:3.15.2-slim
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/onboarding.txt
+    - python3 scripts/validate-manifests.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - manifests/**/*
+        - ci/requirements/onboarding.txt
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && ($SYSTEM_ID || $UPDATE_SYSTEM_ID || $OFFBOARDING_SYSTEM_ID)'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+        - ci/requirements/onboarding.txt
+
+# Fails a merge request whose committed generated files (scripts/
+# provision.py output) don't match its manifests - they are committed
+# in the MR now, not pushed to main after the merge (see
+# scripts/provisioning_sync.py). The onboarding/update/offboarding MR
+# jobs include them automatically; a hand-written MR, or one rebased
+# onto a newer main, needs `python3 scripts/provision.py` + commit.
+# The job log lists the stale files.
+provision:check:
+  stage: validate
+  image: python:3.15.2-slim
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/onboarding.txt
+    - python3 scripts/provisioning_sync.py --check
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - manifests/**/*
+        - scripts/provision.py
+        - scripts/provisioning_sync.py
+        - scripts/generate-system-dashboard.py
+        - ci/requirements/onboarding.txt
+        - helm/values/*-tenant-overrides.yaml
+        - helm/values/ingestion-daily-budgets.yaml
+        - collector-gateway/otel-gateway-collector.yaml
+        - datasources/**/*
+        - dashboards/**/*
+        - tls-certs/**/*
+
+# pip-audit over every pinned requirements file the jobs in this file
+# install from (ci/requirements/*.txt) - fails on any known
+# vulnerability in a pinned version. --no-deps/--disable-pip: the files
+# are already fully resolved by pip-compile, so nothing is installed or
+# re-resolved here, the pins are just looked up. Only on a change to
+# those files, a web-sourced run or a pipeline schedule, deliberately
+# not on every pipeline:
+# a newly published CVE would otherwise fail unrelated onboarding MRs
+# ("Pipelines must succeed" is enabled). Not covered: ansible-core/
+# pywinrm in ci/images/Dockerfile (build:ci-image-scan's trivy scan
+# sees those) and the unpinned pip install in
+# terraform/environments/fleet-4015-filestorage's workload Deployment.
+validate:python-deps:
+  stage: validate
+  image: python:3.15.2-slim
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/audit.txt
+    - |
+      rc=0
+      for file in ci/requirements/*.txt; do
+        echo "== ${file}"
+        pip-audit --progress-spinner off --disable-pip --no-deps -r "${file}" || rc=1
+      done
+      exit $rc
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ci/requirements/*
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - ci/requirements/*
+
+# terraform fmt + validate across every environment - until now nothing
+# checked Terraform before a real apply except build:terraform-plan, and
+# that only ever plans the "demo" state. No backend, no ARM_* variables:
+# `init -backend=false` only downloads providers/modules, `validate` is
+# purely static - so unlike build:terraform-plan this is safe on a merge
+# request pipeline too (no protected variables needed). Deliberately a
+# plain `init`, not `-lockfile=readonly`: the committed lock files don't
+# carry a linux_amd64 h1 hash for every provider, and a read-only init
+# then fails validate with "does not match any of the checksums recorded
+# in the dependency lock file". TF_PLUGIN_CACHE_DIR shares one provider
+# download across all environments instead of one per environment.
+validate:terraform:
+  stage: validate
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  variables:
+    TF_PLUGIN_CACHE_DIR: "${CI_PROJECT_DIR}/.terraform-plugin-cache"
+  script:
+    - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+    - terraform fmt -check -recursive -diff terraform
+    - |
+      rc=0
+      for dir in terraform/environments/*/; do
+        echo "== ${dir}"
+        (cd "${dir}" && terraform init -backend=false -input=false >/dev/null && terraform validate -no-color) || rc=1
+      done
+      exit $rc
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - terraform/**/*
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - terraform/**/*
+
+# hadolint on the one Dockerfile this repo has. --failure-threshold
+# error, not the default: the Dockerfile currently has one known
+# warning (DL4006, the `curl | bash` helm install without pipefail) -
+# fixing it means touching the Dockerfile, which rebuilds and overwrites
+# all four ci-tools/*:v1 images every deploy job depends on. The warning
+# stays visible in this job's log; tighten this back to the default once
+# that install is replaced.
+validate:dockerfile:
+  stage: validate
+  image:
+    name: hadolint/hadolint:v2.15.1-alpine
+    entrypoint: [""]
+  script:
+    - hadolint --failure-threshold error ci/images/Dockerfile
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - ci/images/Dockerfile
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - ci/images/Dockerfile
+
+# Schema validation of every Kubernetes resource this repo keeps as
+# plain YAML - validate:yaml only checks YAML syntax, not whether a
+# Certificate/IngressRoute/OpenTelemetryCollector actually matches its
+# CRD. Explicit paths, not the whole repo: alerting/ (Grafana
+# provisioning files, `apiVersion: 1`) and the plain collector configs
+# under instrumentation/ are not Kubernetes resources. CRD schemas come
+# from datreeio/CRDs-catalog, pinned to a commit like every other
+# version here; -strict also rejects unknown fields. retry: the schemas
+# are fetched from GitHub at run time.
+validate:k8s:
+  stage: validate
+  image:
+    name: ghcr.io/yannh/kubeconform:v0.8.0-alpine
+    entrypoint: [""]
+  variables:
+    CRD_CATALOG_REF: 89c736bdde38b5fecd0f8436ec5f3aa3679a3b86
+  retry: 2
+  script:
+    - >
+      /kubeconform -strict -summary
+      -schema-location default
+      -schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRD_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+      k8s tls-certs datasources collector-gateway
+      instrumentation/applications/4721-kundenverwaltung/postgres-otel-collector.yaml
+      instrumentation/platforms/4087-container-platform/config.yaml
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - k8s/**/*
+        - tls-certs/**/*
+        - datasources/**/*
+        - collector-gateway/**/*
+        - instrumentation/**/*.yaml
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - k8s/**/*
+        - tls-certs/**/*
+        - datasources/**/*
+        - collector-gateway/**/*
+        - instrumentation/**/*.yaml
+
+# Secret scan over the full git history with gitleaks' built-in rule
+# set - fails on any finding. GIT_DEPTH 0: the default shallow clone
+# would only cover the most recent commits. Config + the one deliberate
+# exception (the self-service form's public pipeline trigger token):
+# .gitleaks.toml. Run directly instead of GitLab's own Secret-Detection
+# template: that template's job never fails on a finding, it only
+# uploads a report this project's tier has no UI for. No changes:
+# filter - a secret can land in any file.
+validate:secrets:
+  stage: validate
+  image:
+    name: ghcr.io/gitleaks/gitleaks:v8.30.1
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    # The checkout belongs to a different user than the one this
+    # container runs as - git refuses to read it otherwise ("detected
+    # dubious ownership").
+    - git config --global --add safe.directory "${CI_PROJECT_DIR}"
+    - gitleaks git --no-banner --redact --verbose .
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+# Misconfiguration scan (Terraform, Dockerfile, Kubernetes YAML) with
+# trivy - fails on any HIGH/CRITICAL finding that is not part of the
+# baseline of findings that already existed when this job was added:
+# inline `#trivy:ignore` comments on the affected Terraform resources,
+# plus .trivyignore.yaml (see its own header). Only new ones fail here. MEDIUM/LOW are deliberately not reported at all yet - one
+# threshold to keep green first.
+validate:iac:
+  stage: validate
+  image:
+    name: ghcr.io/aquasecurity/trivy:0.76.2
+    entrypoint: [""]
+  script:
+    - >
+      trivy config --exit-code 1 --severity HIGH,CRITICAL
+      --ignorefile .trivyignore.yaml .
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: &iac_paths
+        - terraform/**/*
+        - ci/images/Dockerfile
+        - k8s/**/*
+        - tls-certs/**/*
+        - datasources/**/*
+        - collector-gateway/**/*
+        - instrumentation/**/*.yaml
+        - .trivyignore.yaml
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: *iac_paths
+
+# ---------------------------------------------------------------------------
+# Self-service onboarding (IaC Roadmap milestone, done - folded in from the
+# now-retired observability-otel-demo-onboarding repo, see that milestone's
+# entry for the full design/rationale). validate:manifests above
+# (manifests/schema.json compliance) plus three "tenants"-stage jobs:
+#   1. tenants:create-mr - a platform/application owner's request (via
+#      form/index.html, published by the pages job below, or a direct
+#      trigger-API call) becomes a new manifests/{platforms,applications}/
+#      file and an MR - never merges anything itself, that's the
+#      observability platform owner's job.
+#   2. tenants:apply - on every push to main that touches manifests/
+#      (i.e. once an onboarding MR is merged), reconciles every manifest
+#      into this same checkout (scripts/provision.py) and commits the
+#      result directly - no second MR, a human already reviewed the
+#      manifest at merge time.
+#   3. pages - publishes form/index.html as the self-service form. Also
+#      in the "tenants" stage logically, but its job name must stay
+#      exactly "pages" (GitLab convention, not a style choice) - the
+#      stage-prefix naming below doesn't apply to it.
+#   4. tenants:rollout (see the deploy-stage section below, moved
+#      here from "deploy" now that this stage exists) - runs in the SAME
+#      pipeline as tenants:apply (needs: + a matching changes: rule,
+#      not a second commit-triggered pipeline), applying the exact files
+#      tenants:apply just generated via its artifact, rolling the
+#      provisioned change out to the live cluster.
+# ---------------------------------------------------------------------------
+
+# Required variable, set as a masked+protected CI/CD variable: a
+# fine-grained Personal Access Token scoped to this project (Project
+# Access Tokens are disabled for this namespace, no self-service toggle -
+# a Personal Access Token is the practical substitute), permissions
+# Branch (create, read), Commit (create, read, update), Merge Request
+# (create, read, update). NOT CI_JOB_TOKEN - it reliably 404s on
+# repository API endpoints (branches/commits) even for this same
+# project, a long-standing, still-open GitLab platform limitation, not a
+# settings issue. Also used by tenants:apply below to push past
+# main's branch protection.
+tenants:create-mr:
+  stage: tenants
+  image: python:3.15.2-slim
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/onboarding.txt
+    - python3 scripts/create-onboarding-mr.py
+  rules:
+    # $SYSTEM_ID guards against a run without the form's variables
+    # reaching create-onboarding-mr.py at all - it exits 1 anyway in that
+    # case, this just fails fast. Only ever started from the form (via
+    # GitLab's "Run pipeline" page) or a manual web run.
+    - if: '($CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api") && $SYSTEM_ID'
+
+# Updates an already-onboarded system's owner/environments (e.g. a
+# T-shirt size change) - see scripts/create-update-mr.py's own comment
+# for why this is deliberately narrower than tenants:create-mr
+# (system_id/type/name stay fixed identity, only owner/environments are
+# replaced). Gated on $UPDATE_SYSTEM_ID specifically, a different
+# variable than $SYSTEM_ID/$OFFBOARDING_SYSTEM_ID, so the form/a
+# trigger call can only ever start one of these three jobs.
+tenants:update-mr:
+  stage: tenants
+  image: python:3.15.2-slim
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/onboarding.txt
+    - python3 scripts/create-update-mr.py
+  rules:
+    - if: '($CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api") && $UPDATE_SYSTEM_ID'
+
+# Reverse of tenants:create-mr above (self-service offboarding) -
+# see scripts/create-offboarding-mr.py's own comment. Gated on
+# $OFFBOARDING_SYSTEM_ID specifically, a different variable than
+# $SYSTEM_ID above, so the form/a trigger call can only ever start one
+# of these two jobs, never both/neither for the same call.
+tenants:offboarding-mr:
+  stage: tenants
+  image: python:3.15.2-slim
+  script:
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/onboarding.txt
+    - python3 scripts/create-offboarding-mr.py
+  rules:
+    - if: '($CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api") && $OFFBOARDING_SYSTEM_ID'
+
+# Required variable, set as a CI/CD variable: GITLAB_API_TOKEN (see
+# tenants:create-mr above) - also used here to push past main's branch
+# protection. No trigger token here on purpose: an earlier version of
+# this design had tenants:apply self-trigger a new pipeline (with a
+# variable tenants:rollout' rules checked) to auto-run the rollout -
+# found live during setup that this is a real vulnerability, not just
+# an unused convenience: GitLab pipeline trigger tokens don't restrict
+# which variables a caller may pass, only that they can start a
+# pipeline at all - so anyone who read the public TRIGGER_TOKEN out of
+# form/index.html's source could have called the trigger API directly
+# with that same "deploy" variable set and rolled a real change out to
+# the live cluster, with zero review. Fixed by keeping the rollout
+# entirely off any trigger-sourced/variable-based path: tenants:rollout
+# now runs via needs:/a same-pipeline changes: rule (see that job's own
+# comment) - only this job, using the server-side-only GITLAB_API_TOKEN
+# that never reaches a browser, can ever push a `manifests/**/*`-touching
+# commit that makes both jobs run. The bot identity below still matters
+# separately: destroy:*'s own rules check it to hide their manual
+# buttons on this job's own follow-up push (see .destroy_fleet's
+# comment).
+tenants:apply:
+  stage: tenants
+  image: python:3.15.2-slim
+  # Serializes this job and tenants:rollout across ALL pipelines
+  # (GitLab's own mutual-exclusion primitive, Free tier) - merging
+  # several onboarding MRs close together starts that many pipelines,
+  # and their rollouts of the same shared tenant state must not
+  # interleave.
+  resource_group: tenants-provisioning
+  variables:
+    # Full history: PROVISIONED_ORDER below counts main's first-parent
+    # commits, a shallow clone would cap that count.
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates >/dev/null
+    - python3 -m venv .venv && . .venv/bin/activate && pip install --quiet --upgrade pip
+    - pip install --quiet -r ci/requirements/onboarding.txt
+  script:
+    # Re-sync to the real, current main instead of this pipeline's
+    # pinned commit (found live: `Checking out 5e2d13c9 as detached
+    # HEAD`): with several merges in a burst, each queued pipeline's own
+    # commit is increasingly stale, and rolling it out would undo the
+    # tenants merged after it.
+    - git fetch origin main
+    - git checkout origin/main
+    # Verify, don't commit: the generated files are committed in the
+    # merge request together with the manifest change (scripts/
+    # provisioning_sync.py, checked there by provision:check). Before,
+    # this job ran provision.py and pushed the result to main with
+    # GITLAB_API_TOKEN (`git push -o ci.skip`) - main was briefly
+    # inconsistent after every merge, reviewers never saw the generated
+    # changes, and the token needed push rights on main. Fail-closed if
+    # main is still out of date (e.g. two MRs generated against the
+    # same older main, merged back to back): the cluster never gets a
+    # state that isn't in git. Fix: run `python3 scripts/provision.py`
+    # on current main and merge that via an MR.
+    - python3 scripts/provisioning_sync.py --check
+    - git archive --format=tar.gz -o provisioned-main.tar.gz HEAD
+    - echo "Verified main $(git rev-parse --short HEAD) - handed to tenants:rollout"
+    # Commit identity for tenants:rollout's newest-wins guard (see there).
+    - echo "PROVISIONED_SHA=$(git rev-parse HEAD)" > provisioned.env
+    # Position on main's first-parent line: every merge to main adds one,
+    # so a later main always has a higher value. Not the commit time -
+    # second resolution, and not guaranteed monotonic.
+    - echo "PROVISIONED_ORDER=$(git rev-list --count --first-parent HEAD)" >> provisioned.env
+  # Hand-off to tenants:rollout in the SAME pipeline (see that job's
+  # own needs:/rules): the complete tree of the main verified above,
+  # not single files layered over rollout's own, possibly older
+  # checkout - that left files deleted on main (an offboarded tenant's
+  # dashboard/certs) in place for Terraform's fileset() to pick up, and
+  # mixed newer data with older Terraform code. (Before, the list of
+  # single files also had to track everything provision.py writes -
+  # found live after a rebuild: tls-certs was missing, and the gateway
+  # hung in Init.) expire_in kept short: same-pipeline relay only.
+  artifacts:
+    paths:
+      - provisioned-main.tar.gz
+    reports:
+      dotenv: provisioned.env
+    # Not just a same-pipeline relay: tenants:rollout can also be a
+    # manual button (Terraform/alerting-only changes), clicked later.
+    # The newest-wins guard keeps an old archive from being rolled out.
+    expire_in: 1 week
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    # Generated files too, not only manifests: a recovery MR that only
+    # regenerates them (after this job failed on an out-of-date main)
+    # must roll out automatically as well. Same list as
+    # tenants:rollout's automatic rule.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+        - helm/values/*-tenant-overrides.yaml
+        - helm/values/ingestion-daily-budgets.yaml
+        - collector-gateway/otel-gateway-collector.yaml
+        - instrumentation/platforms/4087-container-platform/config.yaml
+        - rules/**/*
+        - slo/**/*
+        - services/**/*
+        - datasources/**/*
+        - dashboards/**/*
+        - tls-certs/**/*
+    # Also wherever tenants:rollout is only a manual button, so every
+    # rollout gets a verified main and the newest-wins guard (a manual rollout
+    # from its own checkout would bypass both).
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - terraform/environments/tenants/**/*
+        - alerting/**/*
+        # Same manual condition as tenants:rollout's, which needs: this job.
+        - scripts/sync-mimir-rules.py
+
+# GitLab Pages: publishes form/index.html as the self-service onboarding
+# form. Job must be named "pages", artifact path must be "public" - both
+# GitLab conventions, not arbitrary choices (see this stage's own
+# top-of-file comment for why this one job doesn't get the usual
+# "tenants:" prefix). Deploy > Pages in the project sets the access
+# level (defaults to project-members-only, switch to "Everyone" if
+# requesters without GitLab access need to reach it) and shows the
+# current URL.
+pages:
+  stage: tenants
+  image: alpine:3.24.4
+  script:
+    - mkdir -p public
+    - cp form/index.html public/index.html
+  artifacts:
+    paths:
+      - public
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - form/**/*
+
+.terraform_init:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - cd terraform/environments/demo
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${TF_ADDRESS}"
+      -backend-config="lock_address=${TF_ADDRESS}/lock"
+      -backend-config="unlock_address=${TF_ADDRESS}/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+# Same ARM_*-from-AZURE_* pattern as .terraform_init - the
+# observability-stack/observability-stack-crs modules use the identical
+# Service Principal, just via the kubernetes/helm providers' own
+# data-source-based auth instead of a kubeconfig file (see those
+# modules' versions.tf). TF_VAR_cert_manager_client_id/_secret carry the
+# same optional CERT_MANAGER_CLIENT_ID/_SECRET variables
+# scripts/install-ingress.sh used to read directly - empty string is a
+# valid default (skips the ClusterIssuer/Certificate/IngressRoute, see
+# README section B4), so no `:?` guard here unlike AZURE_*.
+.terraform_init_observability_stack:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - export TF_VAR_cert_manager_client_id="${CERT_MANAGER_CLIENT_ID:-}"
+    - export TF_VAR_cert_manager_client_secret="${CERT_MANAGER_CLIENT_SECRET:-}"
+    - export TF_VAR_grafana_admin_password="${GRAFANA_ADMIN_PASSWORD:-}"
+    - export TF_VAR_openclaw_hooks_token="${OPENCLAW_HOOKS_TOKEN:-}"
+    - cd "$CI_PROJECT_DIR/terraform/environments/observability-stack"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+# OpenClaw's own state - separate from observability-stack above so
+# deploy-aiops:aiops/destroy:aiops can run independently of it (README Open
+# Points - ai-ops-azure integration).
+.terraform_init_aiops:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - export TF_VAR_anthropic_setup_token="${ANTHROPIC_SETUP_TOKEN:-}"
+    - export TF_VAR_openclaw_gateway_token="${OPENCLAW_GATEWAY_TOKEN:-}"
+    - export TF_VAR_openclaw_hooks_token="${OPENCLAW_HOOKS_TOKEN:-}"
+    - export TF_VAR_cert_manager_client_id="${CERT_MANAGER_CLIENT_ID:-}"
+    # Only exported when actually set, unlike the unconditional ones
+    # above - these 4 Terraform variables have real, meaningful
+    # defaults (README A7), and TF_VAR_x="" would override that
+    # default with an empty string rather than falling through to it
+    # (Terraform only applies a variable's default when the env var is
+    # entirely absent, not when it's present-but-empty).
+    - '[ -n "${OPENCLAW_MODEL:-}" ] && export TF_VAR_openclaw_model="$OPENCLAW_MODEL"; true'
+    - '[ -n "${AGENT_NAME:-}" ] && export TF_VAR_openclaw_agent_name="$AGENT_NAME"; true'
+    - '[ -n "${ORGANISATION_NAME:-}" ] && export TF_VAR_openclaw_organisation_name="$ORGANISATION_NAME"; true'
+    - '[ -n "${OPERATOR_NAME:-}" ] && export TF_VAR_openclaw_operator_name="$OPERATOR_NAME"; true'
+    - cd "$CI_PROJECT_DIR/terraform/environments/aiops"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/aiops"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/aiops/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/aiops/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+# Read-only lookup of terraform/environments/observability-stack's
+# pyroscope_internal_ip output (the Pyroscope ingest proxy's internal
+# LoadBalancer) - used by the instrumentation-4711-mitarbeiterverzeichnis/
+# instrumentation-4722-spesenabrechnung jobs only (4721 Kundenverwaltung
+# is K8s-native and uses the proxy's in-cluster Service - see B12 in the
+# main README). Uses -chdir=, not cd, so it doesn't disturb the calling
+# job's own cwd.
+.terraform_output_pyroscope_ip:
+  script:
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/observability-stack
+    - >
+      terraform -chdir=terraform/environments/observability-stack init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - PYROSCOPE_IP=$(terraform -chdir=terraform/environments/observability-stack output -raw pyroscope_internal_ip)
+    - 'echo "Pyroscope internal IP: $PYROSCOPE_IP"'
+
+# Same pattern - NFR-04 mTLS. Used by every VM instrumentation job (1229,
+# 1286, 4711, 4722) for the per-tenant SNI-routed mTLS entrypoint. The
+# old unencrypted gateway_internal_ip:4317 path is gone (F03).
+.terraform_output_traefik_otlp_ip:
+  script:
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/observability-stack
+    - >
+      terraform -chdir=terraform/environments/observability-stack init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - TRAEFIK_OTLP_IP=$(terraform -chdir=terraform/environments/observability-stack output -raw traefik_otlp_ip)
+    - 'echo "Traefik OTLP mTLS internal IP: $TRAEFIK_OTLP_IP"'
+
+# terraform/environments/tenants (IaC Roadmap milestone "Terraform for
+# tenants:rollout' datasources/dashboards") - own state, deliberately
+# separate from observability-stack, see that environment's own header
+# comment.
+.terraform_init_tenants:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - export TF_VAR_openclaw_gateway_token="${OPENCLAW_GATEWAY_TOKEN:-}"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/tenants
+    - >
+      terraform -chdir=terraform/environments/tenants init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/tenants"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/tenants/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/tenants/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+.terraform_init_observability_stack_crs:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - export TF_VAR_cert_manager_client_id="${CERT_MANAGER_CLIENT_ID:-}"
+    - cd "$CI_PROJECT_DIR/terraform/environments/observability-stack-crs"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack-crs"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack-crs/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/observability-stack-crs/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+# kubectl binary only (no helm, no az cli, no kubeconfig/az login) - the
+# observability-stack/observability-stack-crs Terraform modules
+# authenticate the kubernetes/helm providers directly via an
+# azurerm_kubernetes_cluster data source (see those modules' versions.tf),
+# not az aks get-credentials. The one remaining kubectl dependency is
+# observability-stack's mimir_webhook_cleanup null_resource, which
+# generates its own kubeconfig from that same data source - see that
+# resource's own comment.
+.install_kubectl:
+  script:
+    - apk add --no-cache curl
+    # Same kubectl version as ci/images/Dockerfile.
+    - KUBECTL_VERSION=1.37.3
+    - curl -fsSLO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+    - echo "$(curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256")  kubectl" | sha256sum -c -
+    - chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
+
+# terraform/environments/fleet-1286-linux-basis / fleet-1229-windows-basis
+# (IaC Roadmap milestone "2" - VM provisioning, see terraform/modules/
+# client-vm) - each its own independent state, matching the two CI jobs'
+# existing independence (no needs: between them). No kubectl/az cli
+# tooling needed at all here (unlike deploy:observability-stack) - pure
+# `terraform apply` against Azure only, same ARM_*-from-AZURE_* pattern
+# as every other Terraform job.
+.terraform_init_fleet_1286:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - cd "$CI_PROJECT_DIR/terraform/environments/fleet-1286-linux-basis"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+.terraform_init_fleet_1229:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - cd "$CI_PROJECT_DIR/terraform/environments/fleet-1229-windows-basis"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+# terraform/environments/fleet-1294-netzwerk-basis (IaC Roadmap
+# milestone "Terraform for the Kubernetes-native demo apps") - like
+# fleet-1286/fleet-1229 above, no az/kubectl tooling needed: the
+# azurerm_kubernetes_cluster data source authenticates the kubernetes
+# provider directly, same pattern deploy:observability-stack already
+# uses.
+.terraform_init_fleet_1294:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - cd "$CI_PROJECT_DIR/terraform/environments/fleet-1294-netzwerk-basis"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1294-netzwerk-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1294-netzwerk-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1294-netzwerk-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+.terraform_init_fleet_4015:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - cd "$CI_PROJECT_DIR/terraform/environments/fleet-4015-filestorage"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4015-filestorage"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4015-filestorage/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4015-filestorage/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+# terraform/environments/fleet-4139-postgresql - used by
+# deploy-fleets:4721-kundenverwaltung, deploy-instrumentations:4721-kundenverwaltung,
+# and destroy:4721-kundenverwaltung. Directory/state name kept as-is
+# even though 4139 no longer exists as a separate onboarded system -
+# see that module's own header comment for why.
+.terraform_init_fleet_4139:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - cd "$CI_PROJECT_DIR/terraform/environments/fleet-4139-postgresql"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4139-postgresql"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4139-postgresql/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4139-postgresql/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+.terraform_init_fleet_4720:
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - cd "$CI_PROJECT_DIR/terraform/environments/fleet-4720-otel-astronomy-shop"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" .
+    - >
+      terraform init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4720-otel-astronomy-shop"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4720-otel-astronomy-shop/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-4720-otel-astronomy-shop/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+
+.confirm_destroy:
+  script:
+    - |
+      if [ "$CONFIRM_DESTROY" != "yes" ]; then
+        echo "Safety check: set the CI/CD variable CONFIRM_DESTROY=yes when starting the pipeline manually (Run pipeline > Variables) to actually destroy."
+        exit 1
+      fi
+
+build:terraform-plan:
+  stage: build
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  script:
+    - !reference [.terraform_init, script]
+    - terraform plan
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # No merge_request_event rule - this repo has no workflow that
+    # actually opens an MR touching terraform/ (infra changes are
+    # committed straight to main by hand; the only MRs this repo ever
+    # generates are onboarding/offboarding ones, which only ever touch
+    # manifests/). Found live: a merge_request_event rule here needs the
+    # protected AZURE_* variables (ARM_CLIENT_ID etc., via
+    # .terraform_init), which GitLab withholds from a merge request
+    # pipeline unless both branches are protected - never true for an
+    # onboarding/offboarding branch - so ARM_CLIENT_ID etc. ended up
+    # empty and the azurerm provider's fallback to Azure CLI auth failed
+    # outright in this az-cli-less image ("could not parse Azure CLI
+    # version: launching Azure CLI: exec: \"az\": executable file not
+    # found in \$PATH"). A changes: filter alone wasn't a full fix
+    # either: an already-existing MR's pipeline still runs its source
+    # branch's *own* .gitlab-ci.yml, not main's, so branches forked
+    # before this fix landed keep hitting it regardless. Simplest
+    # correct fix: drop the rule entirely - if a genuinely
+    # Terraform-touching MR ever becomes a real workflow here, this can
+    # be revisited then, on a branch protected from the start.
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - terraform/environments/demo/**/*
+        - terraform/modules/aks-cluster/**/*
+        - terraform/modules/networking/**/*
+
+.setup_kubeconfig:
+  script:
+    - az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID" --output none
+    - az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+    - az aks get-credentials -g "$AZURE_RESOURCE_GROUP" -n "$AKS_CLUSTER_NAME" --overwrite-existing
+    - kubectl config current-context
+    - kubectl get nodes
+
+# ansible-core/terraform themselves now come from the ci-tools/ansible-*
+# images (see ci/images/Dockerfile) - this is the one part of the old
+# .install_ansible that ISN'T a package install and so still has to run
+# per-job, every time: GitLab's docker executor checks the repo out
+# world-writable, and Ansible treats an ansible.cfg found under a
+# world-writable directory as untrusted and silently ignores it ("See
+# deploy-instrumentations:1229-windows-basis's own comment" pattern
+# below refers to this). Without this chmod, ansible/ansible.cfg's own
+# [ssh_connection] pipelining = True never actually loads - a real
+# performance regression for Linux targets, not just a log cleanup.
+# Every job below that runs ansible-playbook references this.
+.fix_ansible_cfg_perms:
+  script:
+    - chmod o-w ansible
+
+# ---------------------------------------------------------------------------
+# deploy stage - infra + platform; see the top-of-file comment.
+# tenants:rollout lives in the "tenants" stage now, not here - see that
+# stage's own comment.
+# ---------------------------------------------------------------------------
+
+deploy:infra:
+  stage: deploy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  script:
+    - !reference [.terraform_init, script]
+    - terraform apply -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Manual on both web and push - stays an operator decision (check
+    # build:terraform-plan's own output first), deliberately not
+    # unattended even on web: deploy:observability-stack's own needs:
+    # chains off this job, so it only fires automatically once this one
+    # has actually been triggered and finished, see that job's own
+    # comment.
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/demo/**/*
+        - terraform/modules/aks-cluster/**/*
+        - terraform/modules/networking/**/*
+  environment:
+    name: demo-infra
+
+# Two sequential terraform applies in one job (not two separate CI jobs) -
+# observability-stack-crs's kubernetes_manifest resources need
+# observability-stack's Helm releases (OTel Operator/cert-manager/Traefik
+# CRDs) to already exist in the live cluster before they can even be
+# planned, so there's no useful way to split these across jobs/stages
+# without reintroducing a needs: dependency that's really just this same
+# ordering constraint one layer up - see terraform/environments/
+# observability-stack-crs/versions.tf for the full reasoning, and
+# README.md#d2 (client templates)/IaC Roadmap for the milestone this
+# closes.
+#
+# `needs: [{job: deploy:infra, optional: true}]` below: `optional: true`
+# only skips the dependency when deploy:infra is excluded from the
+# pipeline by its own rules (an ordinary push not touching
+# terraform/environments/demo/**) - on a web-sourced run deploy:infra's
+# rules always match, so this job then genuinely waits for it to
+# actually be triggered and finish. Deliberate: deploy:infra stays a
+# manual operator decision (check build:terraform-plan's own output
+# first - a no-op apply when nothing changed is cheap, but still worth
+# a conscious click), while THIS job stays unattended - so the operator
+# only ever clicks deploy:infra once, and deploy:observability-stack
+# follows automatically the moment it succeeds, no second click needed.
+deploy:observability-stack:
+  stage: deploy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  needs:
+    - job: deploy:infra
+      optional: true
+  script:
+    - !reference [.install_kubectl, script]
+    - !reference [.terraform_init_observability_stack, script]
+    - terraform apply -auto-approve
+    - !reference [.terraform_init_observability_stack_crs, script]
+    - terraform apply -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Unattended on web - see this job's own comment above and the
+    # top-of-file "deploy" stage comment. Stays manual on push.
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/observability-stack/**/*
+        - terraform/environments/observability-stack-crs/**/*
+        - helm/values/mimir-values.yaml
+        - helm/values/loki-values.yaml
+        - helm/values/tempo-values.yaml
+        - helm/values/grafana-values.yaml
+        - helm/values/pyroscope-values.yaml
+        - helm/values/traefik-values.yaml
+        - k8s/ingress/**/*
+        - dashboards/shared/**/*
+        - scripts/storage-usage.py
+        - scripts/ingestion-midnight-snapshot.py
+  environment:
+    name: demo
+
+# OpenClaw's own independent deploy job (README Open Points - ai-ops-azure
+# integration) - separate Terraform state (terraform/environments/aiops)
+# from deploy:observability-stack, so the AI/OpenClaw component of the
+# demo can be deployed/destroyed on its own: running it is optional, not
+# required for the rest of the pipeline. Its own "deploy-aiops" stage, after
+# deploy-fleets/deploy-instrumentations rather than alongside
+# deploy:observability-stack - found live: azurerm_virtual_machine_run_command.
+# openclaw_ssh_key (installs OpenClaw's SSH key onto vm-rocky-demo) can
+# only ever succeed once that fleet's VM actually exists, and every other
+# OpenClaw resource here is otherwise fully independent of it (see that
+# environment's own main.tf comments - VM IP is a plain variable default,
+# not a live data source, specifically so this state doesn't hard-fail
+# when the VM isn't up yet). No explicit needs: here on purpose - it
+# would let this job start as soon as deploy:observability-stack
+# finishes, jumping ahead of deploy-fleets/deploy-instrumentations
+# despite being in a later stage (GitLab's needs: breaks the normal
+# stage-order wait) - plain stage order is what actually guarantees
+# vm-rocky-demo exists by the time this runs, as long as
+# deploy-fleets:1286-linux-basis was triggered at some point first. If it
+# wasn't, only the SSH-key-install resource fails - a legitimate,
+# expected signal ("that fleet was skipped"), not a bug.
+deploy-aiops:aiops:
+  stage: deploy-aiops
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  script:
+    - !reference [.terraform_init_aiops, script]
+    - terraform apply -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/aiops/**/*
+        - openclaw/**/*
+        - sre/**/*
+  environment:
+    name: demo
+
+# Onboarding-scoped, deliberately separate from deploy:observability-stack above:
+# every onboarded tenant's own Mimir/Loki ingestion budgets, Grafana
+# datasources/dashboards, and the 5 demo alert rules pinned to those
+# same systems (moved here after a live bug - see
+# terraform/environments/tenants/main.tf's own header comment and its
+# alert_rules resource's own comment for the split rationale - own
+# Terraform state, deliberately not observability-stack's). Runs in the
+# SAME pipeline as
+# tenants:apply (see this job's own rules/needs: for how) - not a
+# second, commit-triggered pipeline like an earlier version of this
+# design used (commit-author detection); still also runnable manually
+# any time, e.g. after a full teardown
+# (the manual rule's changes: filter only affects when the button shows
+# up on a regular push pipeline with nothing tenants-relevant changed;
+# a `web`-sourced "Run pipeline" always shows it, same escape hatch
+# every other job in this file uses).
+tenants:rollout:
+  stage: tenants
+  # ci-tools/terraform: base (kubectl/helm) + terraform - see
+  # ci/images/Dockerfile. Replaces the old .install_tools/.install_terraform
+  # bootstrap (kept only .setup_kubeconfig below, which stays dynamic
+  # per-job az login/credentials, not bakeable).
+  image: $CI_REGISTRY_IMAGE/ci-tools/terraform:v1
+  # Same resource_group as tenants:apply above, same reason: this job's
+  # own terraform apply (terraform/environments/tenants, a shared
+  # remote state) and helm upgrade --reuse-values would otherwise race
+  # too if several onboarding pipelines' rollouts overlapped. It locks
+  # single jobs, not a pipeline's apply+rollout pair - the newest-wins
+  # guard in the script handles pairs interleaving across pipelines.
+  resource_group: tenants-provisioning
+  # No needs: on deploy:observability-stack (an earlier version had
+  # one) - found live: optional: true only skips the dependency when
+  # the needed job is excluded by its own rules; deploy:observability-
+  # stack's rules always match on a web-sourced run, so it's always
+  # present, and since it in turn needs: deploy:infra (also present,
+  # also manual), this job ended up blocked - no play button at all -
+  # behind a two-job chain of unclicked manual buttons that have
+  # nothing to do with rolling tenants out onto an already-deployed
+  # stack. Same fix as deploy:observability-stack's own needs: removal
+  # on deploy:infra (see that job's comment) - only tenants:apply is a
+  # real same-pipeline dependency (this job downloads its artifact).
+  needs:
+    - job: tenants:apply
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+  script:
+    # Work on the main tenants:apply verified (see its artifacts
+    # comment) - always present, tenants:apply runs in every pipeline
+    # this job can appear in (see both jobs' rules).
+    - rm -rf .provisioned-main && mkdir .provisioned-main
+    - tar -xzf provisioned-main.tar.gz -C .provisioned-main
+    - cd .provisioned-main
+    # Newest wins. resource_group serializes single jobs, not each
+    # pipeline's apply+rollout pair, so with two merges in quick
+    # succession `apply A, apply B, rollout B, rollout A` is possible -
+    # and rollout A would put the older main back. The
+    # ConfigMap below records the newest main a rollout has started; a
+    # rollout of an older main skips. Reading and writing it inside this job is
+    # safe: all rollouts share the resource_group. Ordered by
+    # PROVISIONED_ORDER (see tenants:apply). --ignore-not-found: first
+    # run has no state; any other kubectl error still fails.
+    - |
+      last_order=$(kubectl get configmap tenants-rollout-state -n observability --ignore-not-found -o jsonpath='{.data.commit_order}')
+      last_sha=$(kubectl get configmap tenants-rollout-state -n observability --ignore-not-found -o jsonpath='{.data.commit_sha}')
+      if [ -n "${last_order}" ] && [ "${PROVISIONED_ORDER}" -lt "${last_order}" ]; then
+        echo "Skipping: main ${PROVISIONED_SHA} is older than ${last_sha}, which a newer pipeline already started rolling out."
+        exit 0
+      fi
+    # Record this main BEFORE changing anything: if this
+    # rollout then fails halfway, an older queued rollout must still not
+    # overwrite what it already changed. Equal order passes the guard, so
+    # retrying this job still works.
+    - >
+      kubectl create configmap tenants-rollout-state -n observability
+      --from-literal=commit_sha="${PROVISIONED_SHA}"
+      --from-literal=commit_order="${PROVISIONED_ORDER}"
+      --dry-run=client -o yaml | kubectl apply -f -
+    # Per-tenant Mimir/Loki ingestion budgets - stays a plain helm
+    # step, not Terraform (see terraform/environments/tenants/main.tf's
+    # own header comment for why). --reuse-values layers this file's
+    # runtimeConfig.overrides map on top of whatever
+    # deploy:observability-stack already deployed (Helm deep-merges
+    # nested maps, verified live) - the base mimir/loki-values.yaml's
+    # own runtimeConfig.overrides is deliberately empty (4087 is no
+    # longer special-cased there, see IaC Roadmap). Mimir/Loki hot-reload
+    # runtimeConfig from the resulting ConfigMap, no pod restart needed
+    # (verified live via cortex_limits_overrides). Every CI job runs in
+    # its own fresh container, so the "grafana" repo alias
+    # observability-stack registered doesn't carry over - added again
+    # here too.
+    # Loki and Tempo moved to the grafana-community chart repo (Mimir and
+    # Pyroscope are still published under grafana) - each release is
+    # upgraded from the repo its helm_release in
+    # terraform/environments/observability-stack uses.
+    - helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
+    - helm repo add grafana-community https://grafana-community.github.io/helm-charts >/dev/null 2>&1 || true
+    - helm repo update grafana grafana-community >/dev/null
+    # Applies the tenant overrides only, never a chart upgrade: each
+    # release is upgraded to the chart version it already runs (pinned by
+    # `version` in terraform/environments/observability-stack/main.tf).
+    # Without --version, helm upgrade moves to the newest chart in the
+    # repo - every onboarding would silently upgrade Mimir/Loki/Tempo/
+    # Pyroscope.
+    - |
+      for spec in mimir:grafana/mimir-distributed loki:grafana-community/loki tempo:grafana-community/tempo-distributed pyroscope:grafana/pyroscope; do
+        release="${spec%%:*}"
+        chart="${spec#*:}"
+        version=$(helm get metadata "${release}" -n observability | awk '/^VERSION:/ {print $2}')
+        if [ -z "${version}" ]; then
+          echo "Could not read the deployed chart version of ${release}"
+          exit 1
+        fi
+        # Before deploy:observability-stack moved a release to the
+        # grafana-community chart (manual on push, so this job can run
+        # first), its deployed version only exists in the grafana repo.
+        if ! helm show chart "${chart}" --version "${version}" >/dev/null 2>&1; then
+          chart="grafana/${chart#*/}"
+        fi
+        helm upgrade "${release}" "${chart}" -n observability --version "${version}" --reuse-values -f "helm/values/${release}-tenant-overrides.yaml"
+      done
+    # Per-tenant datasources/dashboards (picked up by Grafana's sidecars
+    # without a restart) - terraform/environments/tenants.
+    - !reference [.terraform_init_tenants, script]
+    - terraform -chdir=terraform/environments/tenants apply -auto-approve
+    # G03/G04/G08: per-tenant ruler rules (rules/<tenant>/, generated by
+    # scripts/generate-rules.py) into the Mimir ruler. The ruler only
+    # exists after deploy:observability-stack enabled it - until then
+    # this step warns and skips instead of failing the rollout; re-run
+    # tenants:rollout afterwards. PyYAML: older CI images lack it.
+    - |
+      python3 -c 'import yaml' 2>/dev/null || tdnf install -y -q python3-pyyaml >/dev/null
+      if [ -z "$(kubectl -n observability get endpoints mimir-ruler -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" ]; then
+        echo "WARNING: Mimir ruler not running (deploy:observability-stack not yet applied?) - rule sync skipped, re-run tenants:rollout afterwards"
+      else
+        kubectl -n observability port-forward svc/mimir-ruler 18080:8080 >/tmp/pf.log 2>&1 &
+        PF=$!
+        for i in $(seq 1 30); do curl -sf http://localhost:18080/ready >/dev/null && break; sleep 2; done
+        python3 scripts/sync-mimir-rules.py --url http://localhost:18080
+        RC=$?
+        kill $PF
+        exit $RC
+      fi
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # `if: web` deliberately comes FIRST here, same position as
+    # tenants:apply's own rules - found live: with the push/changes
+    # rule first instead, a plain "Run pipeline" (web) click fell
+    # through to this job's second rule for its rules to apply at all.
+    # Unattended here too (no `when: manual`), same as tenants:apply -
+    # an earlier version of this file made this job a manual button on
+    # web deliberately, but found live that's redundant friction, not a
+    # real safety gate: the actual review already happened when the
+    # onboarding MR was merged (same reasoning as
+    # deploy:observability-stack following deploy:infra automatically,
+    # see that job's own comment) - tenants:apply going green with this
+    # job's button still sitting unclicked was easy to miss entirely in
+    # practice (found live, chasing why a real onboarding's dashboard
+    # fix never rolled out after a "Run pipeline" run: tenants:apply had
+    # silently re-run its reconciliation while this job just sat
+    # unclicked).
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    # Runs in the SAME pipeline as tenants:apply, not a second one -
+    # this if:/changes: is deliberately identical to tenants:apply's
+    # own auto-run rule, so both jobs get created together whenever an
+    # onboarding MR merges (or any push to main touches manifests/**/*).
+    # needs: tenants:apply (above) both sequences this job after it
+    # in the DAG and downloads its artifact - the exact generated files
+    # tenants:apply just produced, not a re-fetched/re-cloned copy.
+    # Replaces an earlier version of this design that auto-ran via a
+    # commit-author check instead, which only ever matched in a
+    # SEPARATE, second pipeline (the one GitLab spins up for
+    # tenants:apply's own follow-up push) - meaning the
+    # merge-triggered pipeline itself never got past tenants:apply.
+    # Still no trigger-token/pipeline-variable involved (see
+    # tenants:apply's own comment on why that's a real
+    # vulnerability, not just unused convenience) - this is pure
+    # same-pipeline DAG ordering, nothing a caller can forge via a
+    # trigger call.
+    #
+    # **Found live, still unexplained**: on the real onboarding run
+    # this reordering was prompted by, this rule's own condition did
+    # not fire on a genuine push that touched manifests/**/* (the
+    # dashboard never rolled out until manually forced via a direct
+    # kubectl patch, then this rule reorder). Structurally this rule
+    # should be unconditional for any such push - no root cause
+    # confirmed yet (no pipeline-trace/API access available to inspect
+    # the actual before_sha/changes computation for that run). Flagged
+    # here rather than silently assumed fixed by the reorder above,
+    # which only addresses the confirmed `web`-source asymmetry.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+        - helm/values/*-tenant-overrides.yaml
+        - helm/values/ingestion-daily-budgets.yaml
+        - collector-gateway/otel-gateway-collector.yaml
+        - instrumentation/platforms/4087-container-platform/config.yaml
+        - rules/**/*
+        - slo/**/*
+        - services/**/*
+        - datasources/**/*
+        - dashboards/**/*
+        - tls-certs/**/*
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/tenants/**/*
+        - scripts/sync-mimir-rules.py
+        - helm/values/mimir-tenant-overrides.yaml
+        - helm/values/loki-tenant-overrides.yaml
+        - helm/values/tempo-tenant-overrides.yaml
+        - helm/values/pyroscope-tenant-overrides.yaml
+        - datasources/**/*
+        - dashboards/**/*
+        - collector-gateway/otel-gateway-collector.yaml
+        - alerting/**/*
+  environment:
+    name: demo
+
+# ---------------------------------------------------------------------------
+# deploy-fleets stage - provisions the demo fleet,
+# deliberately no telemetry yet (see instrumentation-* below)
+# ---------------------------------------------------------------------------
+
+.deploy_fleet:
+  stage: deploy-fleets
+  # Never actually inherited unmodified - every real deploy-fleets:* job
+  # either overrides image+before_script for a pure-Terraform
+  # hashicorp/terraform image, or (4711/4722) overrides image for one of
+  # the ci-tools/* images (see ci/images/Dockerfile) - kept as a valid,
+  # sane default (kubectl/helm already baked into ci-tools/base) rather
+  # than dead weight.
+  image: $CI_REGISTRY_IMAGE/ci-tools/base:v1
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  environment:
+    name: demo
+
+# --- platform-basis tier: only needs deploy:observability-stack, run in parallel ---
+
+# Both below: pure Terraform, so overridden to the hashicorp/terraform
+# image instead of .deploy_fleet's azure-cli one, and no
+# before_script/kubeconfig setup needed (VM-only, no AKS access) - see
+# .terraform_init_fleet_1286/.terraform_init_fleet_1229's own comment.
+deploy-fleets:1229-windows-basis:
+  extends: .deploy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy:observability-stack
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_1229, script]
+    - terraform apply -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-1229-windows-basis/**/*
+        - terraform/modules/client-vm/**/*
+
+deploy-fleets:1286-linux-basis:
+  extends: .deploy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy:observability-stack
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_1286, script]
+    - terraform apply -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-1286-linux-basis/**/*
+        - terraform/modules/client-vm/**/*
+
+deploy-fleets:1294-netzwerk-basis:
+  extends: .deploy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy:observability-stack
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_1294, script]
+    - terraform apply -auto-approve -var instrument=false
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-1294-netzwerk-basis/**/*
+        - instrumentation/platforms/1294-netzwerk-basis/**/*
+
+deploy-fleets:4015-filestorage:
+  extends: .deploy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy:observability-stack
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_4015, script]
+    - terraform apply -auto-approve -var instrument=false
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-4015-filestorage/**/*
+        - instrumentation/platforms/object-storage/**/*
+
+# --- applikationen tier: each needs its platform-basis tier job to have
+# run. 4711/4722 below: Ansible over SSH/WinRM (IaC Roadmap milestone,
+# same pattern as deploy-instrumentations:1286-linux-basis/-1229-windows-basis -
+# see ansible/README.md), not shell/PowerShell + `az vm run-command` -
+# both apps already run on the Terraform/Ansible-managed platform-basis
+# VMs, so this is a config-only translation, no new VM provisioning. The
+# `az network nsg rule create` call for the app's own port stays
+# imperative CLI, not moved into Terraform/Ansible - see
+# terraform/modules/client-vm's own base-access-rule comment for why. ---
+
+deploy-fleets:4711-mitarbeiterverzeichnis:
+  extends: .deploy_fleet
+  # ci-tools/ansible-linux: terraform + ansible-core + openssh-client -
+  # see ci/images/Dockerfile. Replaces .install_tools/.install_ssh/
+  # .install_ansible (kept .setup_kubeconfig + .fix_ansible_cfg_perms
+  # below - see that template's own comment for why it's still needed
+  # per-job).
+  image: $CI_REGISTRY_IMAGE/ci-tools/ansible-linux:v1
+  needs:
+    - job: deploy-fleets:1286-linux-basis
+      optional: true
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+    - !reference [.fix_ansible_cfg_perms, script]
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/fleet-1286-linux-basis
+    - >
+      terraform -chdir=terraform/environments/fleet-1286-linux-basis init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw ssh_private_key > /tmp/vm-rocky-demo.pem
+    - chmod 600 /tmp/vm-rocky-demo.pem
+    - ROCKY_IP=$(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw public_ip_address)
+    - ROCKY_USER=$(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw admin_username)
+    # F08: pinned host key, read over the Azure control plane (modules/client-vm).
+    - echo "$ROCKY_IP $(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw ssh_host_public_key)" > /tmp/known_hosts
+    - |
+      cat > ansible/inventory/generated.ini << EOF
+      [platform_linux]
+      vm-rocky-demo ansible_host=$ROCKY_IP ansible_user=$ROCKY_USER ansible_ssh_private_key_file=/tmp/vm-rocky-demo.pem ansible_python_interpreter=/usr/bin/python3 ansible_ssh_common_args='-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/known_hosts'
+
+      [platform_windows]
+      EOF
+    - cd ansible
+    - export ANSIBLE_HOST_KEY_CHECKING=True
+    - export ANSIBLE_ROLES_PATH="$(pwd)/roles"
+    - ansible-playbook -i inventory/generated.ini playbooks/onboard-middleware-tomcat.yml --tags install
+    - cd ..
+    - >
+      az network nsg rule create -g "$AZURE_RESOURCE_GROUP" --nsg-name vm-rocky-demoNSG
+      --name AllowTomcat8080Inbound --priority 200 --access Allow --direction Inbound
+      --destination-port-ranges 8080 --protocol Tcp >/dev/null
+    - echo "4711 (Tomcat + Mitarbeiterverzeichnis) provisioned on vm-rocky-demo (no telemetry yet) - http://$ROCKY_IP:8080/examples/servlets/servlet/HelloWorldExample"
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - ansible/roles/middleware-tomcat/**/*
+        - ansible/roles/otlp_client_cert/**/*
+        - ansible/playbooks/onboard-middleware-tomcat.yml
+        - ansible/playbooks/group_vars/all.yml
+        - instrumentation/middleware/tomcat/**/*
+
+deploy-fleets:4720-otel-astronomy-shop:
+  extends: .deploy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy:observability-stack
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_4720, script]
+    - terraform apply -auto-approve -var instrument=false
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-4720-otel-astronomy-shop/**/*
+        - helm/values/otel-demo-values.yaml
+        - instrumentation/applications/4720-otel-astronomy-shop/**/*
+
+deploy-fleets:4721-kundenverwaltung:
+  extends: .deploy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy:observability-stack
+      optional: true
+  script:
+    # This environment includes Postgres too, Kundenverwaltung's own
+    # dedicated database - see fleet-4139-postgresql/main.tf's own
+    # header comment for why this directory keeps its old name.
+    - !reference [.terraform_init_fleet_4139, script]
+    # F25: keep the current instrumentation state. instrument=false
+    # unconditionally used to strip the OTel agent/collector for a moment
+    # whenever this job ran on an already instrumented deployment, until
+    # deploy-instrumentations:4721 re-added them. A fresh deployment
+    # still starts without telemetry (Demo Runbook step 2).
+    # A state/backend error fails the job instead of reading as "not
+    # instrumented"; only "no state yet" (fresh deployment) counts as false.
+    - |
+      if ! STATE_RESOURCES=$(terraform state list 2>/tmp/state-list.err); then
+        grep -q 'No state file was found' /tmp/state-list.err || { cat /tmp/state-list.err; exit 1; }
+        STATE_RESOURCES=""
+      fi
+    - |
+      if printf '%s\n' "$STATE_RESOURCES" | grep -q '^kubernetes_manifest\.postgres_otel_collector'; then
+        INSTRUMENT=true
+      else
+        INSTRUMENT=false
+      fi
+      echo "instrument=$INSTRUMENT (kept from current state)"
+    - terraform apply -auto-approve -var instrument=$INSTRUMENT
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-4139-postgresql/**/*
+        - app/4721-kundenverwaltung/**/*
+
+deploy-fleets:4722-spesenabrechnung:
+  extends: .deploy_fleet
+  # ci-tools/ansible-windows: terraform + ansible-core + pywinrm +
+  # ansible.windows - see ci/images/Dockerfile. Replaces .install_tools/
+  # .install_ansible_windows (kept .setup_kubeconfig +
+  # .fix_ansible_cfg_perms below - see that template's own comment).
+  image: $CI_REGISTRY_IMAGE/ci-tools/ansible-windows:v1
+  needs:
+    - job: deploy-fleets:1229-windows-basis
+      optional: true
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+    - !reference [.fix_ansible_cfg_perms, script]
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/fleet-1229-windows-basis
+    - >
+      terraform -chdir=terraform/environments/fleet-1229-windows-basis init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - WINDOWS_IP=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw public_ip_address)
+    - WINDOWS_USER=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw admin_username)
+    - WINDOWS_PASS=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw admin_password)
+    # F08: pinned WinRM server certificate (modules/client-vm, pin-winrm-cert).
+    - terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw winrm_server_cert_pem > /tmp/winrm-server.pem
+    - |
+      cat > ansible/inventory/generated.ini << EOF
+      [platform_linux]
+
+      [platform_windows]
+      vm-windows-demo ansible_host=$WINDOWS_IP ansible_user=$WINDOWS_USER ansible_password=$WINDOWS_PASS ansible_connection=winrm ansible_winrm_transport=basic ansible_winrm_server_cert_validation=validate ansible_winrm_ca_trust_path=/tmp/winrm-server.pem ansible_port=5986
+      EOF
+    - cd ansible
+    - export ANSIBLE_HOST_KEY_CHECKING=True
+    - export ANSIBLE_ROLES_PATH="$(pwd)/roles"
+    - ansible-playbook -i inventory/generated.ini playbooks/onboard-middleware-dotnet.yml --tags install
+    - cd ..
+    - >
+      az network nsg rule create -g "$AZURE_RESOURCE_GROUP" --nsg-name vm-windows-demoNSG
+      --name AllowSpesenabrechnung8080Inbound --priority 200 --access Allow --direction Inbound
+      --destination-port-ranges 8080 --protocol Tcp >/dev/null
+    - echo "4722 provisioned (no OTEL_EXPORTER_OTLP_ENDPOINT set, no telemetry yet) - http://$WINDOWS_IP:8080/"
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - ansible/roles/middleware-dotnet/**/*
+        - ansible/roles/otlp_client_cert/**/*
+        - ansible/playbooks/onboard-middleware-dotnet.yml
+        - ansible/playbooks/group_vars/all.yml
+        - instrumentation/middleware/dotnet/**/*
+        - app/4722-spesenabrechnung/**/*
+
+# ---------------------------------------------------------------------------
+# deploy-instrumentations stage - adds OTel
+# instrumentation to what fleet-* already provisioned, one job per fleet
+# job. "Only for the demo" - in reality this would run in each platform/
+# application's own repo, not here (see the top-of-file comment).
+# ---------------------------------------------------------------------------
+
+.instrument_fleet:
+  stage: deploy-instrumentations
+  # Never actually inherited unmodified - same story as .deploy_fleet
+  # above (every real deploy-instrumentations:* job overrides image
+  # either to a pure-Terraform image or one of the ci-tools/ansible-*
+  # images, see ci/images/Dockerfile). Kept as a sane default.
+  image: $CI_REGISTRY_IMAGE/ci-tools/base:v1
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  environment:
+    name: demo
+
+# Both below: Ansible over WinRM/SSH (IaC Roadmap milestone - a
+# deliberate exception to this repo's usual `az vm run-command`-only
+# rule, see ansible/README.md and README.md#b2). Credentials come from
+# terraform/modules/client-vm's own outputs, read via `terraform
+# output` against the matching fleet-1286-linux-basis/
+# fleet-1229-windows-basis state (read-only - no terraform apply here,
+# provisioning stays fleet-*'s job) - never committed, never persisted
+# beyond this job's own ephemeral container.
+deploy-instrumentations:1229-windows-basis:
+  extends: .instrument_fleet
+  # ci-tools/ansible-windows - see ci/images/Dockerfile and
+  # deploy-fleets:4722-spesenabrechnung's own comment on this image.
+  image: $CI_REGISTRY_IMAGE/ci-tools/ansible-windows:v1
+  needs:
+    - job: deploy-fleets:1229-windows-basis
+      optional: true
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+    - !reference [.fix_ansible_cfg_perms, script]
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/fleet-1229-windows-basis
+    - >
+      terraform -chdir=terraform/environments/fleet-1229-windows-basis init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - WINDOWS_IP=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw public_ip_address)
+    - WINDOWS_USER=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw admin_username)
+    - WINDOWS_PASS=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw admin_password)
+    # F08: pinned WinRM server certificate (modules/client-vm, pin-winrm-cert).
+    - terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw winrm_server_cert_pem > /tmp/winrm-server.pem
+    - !reference [.terraform_output_traefik_otlp_ip, script]
+    - |
+      cat > ansible/inventory/generated.ini << EOF
+      [platform_linux]
+
+      [platform_windows]
+      vm-windows-demo ansible_host=$WINDOWS_IP ansible_user=$WINDOWS_USER ansible_password=$WINDOWS_PASS ansible_connection=winrm ansible_winrm_transport=basic ansible_winrm_server_cert_validation=validate ansible_winrm_ca_trust_path=/tmp/winrm-server.pem ansible_port=5986
+      EOF
+    - cd ansible
+    # GitLab CI checks the repo out into a world-writable directory -
+    # Ansible refuses to load ansible.cfg from one (a security check,
+    # found live: "ignoring it as an ansible.cfg source", silently
+    # dropping the inventory/roles_path settings, breaking both). Passed
+    # explicitly instead of relying on cfg discovery, which still works
+    # for a local/manual run from a normal directory.
+    - export ANSIBLE_HOST_KEY_CHECKING=True
+    - export ANSIBLE_ROLES_PATH="$(pwd)/roles"
+    - ansible-playbook -i inventory/generated.ini playbooks/onboard-platform-windows.yml -e "traefik_otlp_ip=$TRAEFIK_OTLP_IP tenant_id=1229-prod deployment_environment=prod"
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - ansible/roles/platform-windows/**/*
+        - ansible/roles/otlp_client_cert/**/*
+        - ansible/playbooks/onboard-platform-windows.yml
+        - ansible/playbooks/group_vars/all.yml
+        - instrumentation/platforms/1229-windows-basis/config.yaml
+
+deploy-instrumentations:1286-linux-basis:
+  extends: .instrument_fleet
+  # ci-tools/ansible-linux - see ci/images/Dockerfile and
+  # deploy-fleets:4711-mitarbeiterverzeichnis's own comment on this image.
+  image: $CI_REGISTRY_IMAGE/ci-tools/ansible-linux:v1
+  needs:
+    - job: deploy-fleets:1286-linux-basis
+      optional: true
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+    - !reference [.fix_ansible_cfg_perms, script]
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/fleet-1286-linux-basis
+    - >
+      terraform -chdir=terraform/environments/fleet-1286-linux-basis init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw ssh_private_key > /tmp/vm-rocky-demo.pem
+    - chmod 600 /tmp/vm-rocky-demo.pem
+    - ROCKY_IP=$(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw public_ip_address)
+    - ROCKY_USER=$(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw admin_username)
+    # F08: pinned host key, read over the Azure control plane (modules/client-vm).
+    - echo "$ROCKY_IP $(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw ssh_host_public_key)" > /tmp/known_hosts
+    - !reference [.terraform_output_traefik_otlp_ip, script]
+    - |
+      cat > ansible/inventory/generated.ini << EOF
+      [platform_linux]
+      vm-rocky-demo ansible_host=$ROCKY_IP ansible_user=$ROCKY_USER ansible_ssh_private_key_file=/tmp/vm-rocky-demo.pem ansible_python_interpreter=/usr/bin/python3 ansible_ssh_common_args='-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/known_hosts'
+
+      [platform_windows]
+      EOF
+    - cd ansible
+    # See deploy-instrumentations:1229-windows-basis's own comment - same
+    # world-writable-directory reason ansible.cfg is ignored in CI.
+    - export ANSIBLE_HOST_KEY_CHECKING=True
+    - export ANSIBLE_ROLES_PATH="$(pwd)/roles"
+    - ansible-playbook -i inventory/generated.ini playbooks/onboard-platform-linux.yml -e "traefik_otlp_ip=$TRAEFIK_OTLP_IP tenant_id=1286-prod deployment_environment=prod"
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - ansible/roles/platform-linux/**/*
+        - ansible/roles/otlp_client_cert/**/*
+        - ansible/playbooks/onboard-platform-linux.yml
+        - ansible/playbooks/group_vars/all.yml
+        - instrumentation/platforms/1286-linux-basis/config.yaml
+
+deploy-instrumentations:1294-netzwerk-basis:
+  extends: .instrument_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy-fleets:1294-netzwerk-basis
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_1294, script]
+    - terraform apply -auto-approve -var instrument=true
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-1294-netzwerk-basis/**/*
+        - instrumentation/platforms/1294-netzwerk-basis/**/*
+
+deploy-instrumentations:4015-filestorage:
+  extends: .instrument_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy-fleets:4015-filestorage
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_4015, script]
+    - terraform apply -auto-approve -var instrument=true
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-4015-filestorage/**/*
+        - instrumentation/platforms/object-storage/**/*
+
+deploy-instrumentations:4711-mitarbeiterverzeichnis:
+  extends: .instrument_fleet
+  # ci-tools/ansible-linux - see ci/images/Dockerfile and
+  # deploy-fleets:4711-mitarbeiterverzeichnis's own comment on this image.
+  image: $CI_REGISTRY_IMAGE/ci-tools/ansible-linux:v1
+  needs:
+    - job: deploy-fleets:4711-mitarbeiterverzeichnis
+      optional: true
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+    - !reference [.fix_ansible_cfg_perms, script]
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/fleet-1286-linux-basis
+    - >
+      terraform -chdir=terraform/environments/fleet-1286-linux-basis init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1286-linux-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw ssh_private_key > /tmp/vm-rocky-demo.pem
+    - chmod 600 /tmp/vm-rocky-demo.pem
+    - ROCKY_IP=$(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw public_ip_address)
+    - ROCKY_USER=$(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw admin_username)
+    # F08: pinned host key, read over the Azure control plane (modules/client-vm).
+    - echo "$ROCKY_IP $(terraform -chdir=terraform/environments/fleet-1286-linux-basis output -raw ssh_host_public_key)" > /tmp/known_hosts
+    - !reference [.terraform_output_traefik_otlp_ip, script]
+    - !reference [.terraform_output_pyroscope_ip, script]
+    - |
+      cat > ansible/inventory/generated.ini << EOF
+      [platform_linux]
+      vm-rocky-demo ansible_host=$ROCKY_IP ansible_user=$ROCKY_USER ansible_ssh_private_key_file=/tmp/vm-rocky-demo.pem ansible_python_interpreter=/usr/bin/python3 ansible_ssh_common_args='-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/known_hosts'
+
+      [platform_windows]
+      EOF
+    - cd ansible
+    - export ANSIBLE_HOST_KEY_CHECKING=True
+    - export ANSIBLE_ROLES_PATH="$(pwd)/roles"
+    - ansible-playbook -i inventory/generated.ini playbooks/onboard-middleware-tomcat.yml --tags instrument -e "traefik_otlp_ip=$TRAEFIK_OTLP_IP pyroscope_internal_ip=$PYROSCOPE_IP tenant_id=4711-prod service_name=tomcat-demo-app service_namespace=mitarbeiterverzeichnis deployment_environment=prod app_owner='Web App Team' app_cost_center=CC-4711 app_size_class=M"
+    - echo "4711 (Tomcat + Mitarbeiterverzeichnis) instrumented on vm-rocky-demo"
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - ansible/roles/middleware-tomcat/**/*
+        - ansible/roles/otlp_client_cert/**/*
+        - ansible/playbooks/onboard-middleware-tomcat.yml
+        - ansible/playbooks/group_vars/all.yml
+        - instrumentation/middleware/tomcat/**/*
+
+deploy-instrumentations:4720-otel-astronomy-shop:
+  extends: .instrument_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy-fleets:4720-otel-astronomy-shop
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_4720, script]
+    - terraform apply -auto-approve -var instrument=true
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-4720-otel-astronomy-shop/**/*
+        - helm/values/otel-demo-values.yaml
+        - instrumentation/applications/4720-otel-astronomy-shop/**/*
+
+deploy-instrumentations:4721-kundenverwaltung:
+  extends: .instrument_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  needs:
+    - job: deploy-fleets:4721-kundenverwaltung
+      optional: true
+  script:
+    - !reference [.terraform_init_fleet_4139, script]
+    - terraform apply -auto-approve -var instrument=true
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - terraform/environments/fleet-4139-postgresql/**/*
+        - app/4721-kundenverwaltung/**/*
+        - instrumentation/applications/4721-kundenverwaltung/**/*
+
+deploy-instrumentations:4722-spesenabrechnung:
+  extends: .instrument_fleet
+  # ci-tools/ansible-windows - see ci/images/Dockerfile and
+  # deploy-fleets:4722-spesenabrechnung's own comment on this image.
+  image: $CI_REGISTRY_IMAGE/ci-tools/ansible-windows:v1
+  needs:
+    - job: deploy-fleets:4722-spesenabrechnung
+      optional: true
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+    - !reference [.fix_ansible_cfg_perms, script]
+  script:
+    - export ARM_CLIENT_ID="$AZURE_CLIENT_ID"
+    - export ARM_CLIENT_SECRET="$AZURE_CLIENT_SECRET"
+    - export ARM_TENANT_ID="$AZURE_TENANT_ID"
+    - export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+    - sh "$CI_PROJECT_DIR/ci/gitlab/http-backend-override.sh" terraform/environments/fleet-1229-windows-basis
+    - >
+      terraform -chdir=terraform/environments/fleet-1229-windows-basis init
+      -backend-config="address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis"
+      -backend-config="lock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="unlock_address=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/fleet-1229-windows-basis/lock"
+      -backend-config="username=gitlab-ci-token"
+      -backend-config="password=${CI_JOB_TOKEN}"
+      -backend-config="lock_method=POST"
+      -backend-config="unlock_method=DELETE"
+      -backend-config="retry_wait_min=5"
+    - WINDOWS_IP=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw public_ip_address)
+    - WINDOWS_USER=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw admin_username)
+    - WINDOWS_PASS=$(terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw admin_password)
+    # F08: pinned WinRM server certificate (modules/client-vm, pin-winrm-cert).
+    - terraform -chdir=terraform/environments/fleet-1229-windows-basis output -raw winrm_server_cert_pem > /tmp/winrm-server.pem
+    - !reference [.terraform_output_traefik_otlp_ip, script]
+    - !reference [.terraform_output_pyroscope_ip, script]
+    - |
+      cat > ansible/inventory/generated.ini << EOF
+      [platform_linux]
+
+      [platform_windows]
+      vm-windows-demo ansible_host=$WINDOWS_IP ansible_user=$WINDOWS_USER ansible_password=$WINDOWS_PASS ansible_connection=winrm ansible_winrm_transport=basic ansible_winrm_server_cert_validation=validate ansible_winrm_ca_trust_path=/tmp/winrm-server.pem ansible_port=5986
+      EOF
+    - cd ansible
+    - export ANSIBLE_HOST_KEY_CHECKING=True
+    - export ANSIBLE_ROLES_PATH="$(pwd)/roles"
+    - ansible-playbook -i inventory/generated.ini playbooks/onboard-middleware-dotnet.yml --tags instrument -e "traefik_otlp_ip=$TRAEFIK_OTLP_IP pyroscope_internal_ip=$PYROSCOPE_IP tenant_id=4722-prod service_namespace=spesenabrechnung deployment_environment=prod app_owner='Platform Engineering' app_cost_center=CC-4722 app_size_class=S"
+    - echo "4722 instrumented (exporting to tenant 4722-prod)"
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+      changes:
+        - ansible/roles/middleware-dotnet/**/*
+        - ansible/roles/otlp_client_cert/**/*
+        - ansible/playbooks/onboard-middleware-dotnet.yml
+        - ansible/playbooks/group_vars/all.yml
+        - instrumentation/middleware/dotnet/**/*
+
+# ---------------------------------------------------------------------------
+# demo stage - one break/fix job pair per Use Case in README.md's Demo
+# Use Cases table (see README.md#runbook for the presenter steps),
+# so each row's own alert (see alerting/README.md) can be forced and
+# cleared live, independently, any time - same "always-available manual
+# button, no changes: gate" idiom as .destroy_fleet below, since these
+# are one-shot operational actions, not deployments reacting to a file
+# change. Placed after tenants (not directly after deploy-
+# instrumentations) - every alert queries a per-tenant datasource that
+# only exists once tenants:rollout has actually run.
+# ---------------------------------------------------------------------------
+
+.demo_uc:
+  stage: demo
+  # ci-tools/base: kubectl + helm on top of the azure-cli image - see
+  # ci/images/Dockerfile. None of the 5 UCs need terraform/ansible.
+  image: $CI_REGISTRY_IMAGE/ci-tools/base:v1
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use (see destroy:*'s own
+    # rule/comment for the same pattern) - this only fires in exactly
+    # the pipeline where those two are about to run, not on an
+    # unrelated push to main.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  environment:
+    name: demo
+
+# UC1 - Linux CPU Saturation: 2 CPU-spin loops on vm-rocky-demo (its 2
+# vCPUs) via az vm run-command - plain bash, no package install
+# (stress-ng/stress aren't on the VM and won't be added). The script
+# is written to a local file first and passed as --scripts @file
+# rather than inlined, so the remote script's own $-expansions
+# ($!/$pid) aren't touched by this job's own shell/YAML parsing.
+demo:uc1-break:
+  extends: .demo_uc
+  script:
+    - |
+      cat > /tmp/uc1-break.sh << 'EOF'
+      rm -f /tmp/demo-uc1-cpu.pids
+      for i in 1 2; do
+        # nice -n 19 (lowest scheduling priority) - found live:
+        # vm-rocky-demo is a Standard_B2s (2 vCPUs, burstable) - at
+        # ~100% combined CPU from these two loops, a brand-new SSH
+        # connection's handshake/fork (needed by OpenClaw's own
+        # remediation over SSH, once per runbook step) intermittently
+        # failed outright ("Command exited with code 255") rather than
+        # just running slowly - the very fault being demonstrated was
+        # degrading the channel meant to fix it. CPU usage (what the
+        # alert measures) is unaffected by niceness - only scheduling
+        # priority changes, so sshd/its forked shells now reliably get
+        # CPU ahead of these two loops instead of competing evenly.
+        nohup nice -n 19 bash -c 'while :; do :; done' >/dev/null 2>&1 &
+        echo $! >> /tmp/demo-uc1-cpu.pids
+      done
+      echo "started:"; cat /tmp/demo-uc1-cpu.pids
+      EOF
+    - az vm run-command invoke -g rg-bensc-001 -n vm-rocky-demo --command-id RunShellScript --scripts @/tmp/uc1-break.sh
+    - echo "2 CPU-spin loops started on vm-rocky-demo - '1286 Linux Basis - host CPU > 80%' should fire in ~1-2 min, see Grafana's Alerting page."
+
+demo:uc1-fix:
+  extends: .demo_uc
+  script:
+    - |
+      cat > /tmp/uc1-fix.sh << 'EOF'
+      # Matches the loop body directly (pkill -f) rather than trusting
+      # /tmp/demo-uc1-cpu.pids alone - found live that a stale/mismatched
+      # pidfile (root cause never fully pinned down, plausibly a race
+      # between overlapping `az vm run-command` invocations while this
+      # same session was separately fighting a full-disk RunCommand
+      # extension wedge) let `kill "$pid" || true` silently do nothing
+      # while this job still printed "stopped" - the loops kept running,
+      # unnoticed, until caught by chance via a manual `top` check.
+      if [ -f /tmp/demo-uc1-cpu.pids ]; then
+        while read -r pid; do kill "$pid" 2>/dev/null || true; done < /tmp/demo-uc1-cpu.pids
+        rm -f /tmp/demo-uc1-cpu.pids
+      fi
+      pkill -f 'while :; do :; done' 2>/dev/null || true
+      sleep 1
+      if pgrep -f 'while :; do :; done' >/dev/null; then
+        echo "WARNING: a CPU-spin loop is still running after kill attempts"
+        pgrep -af 'while :; do :; done'
+        exit 1
+      fi
+      echo "stopped - verified no CPU-spin loop remains"
+      EOF
+    - az vm run-command invoke -g rg-bensc-001 -n vm-rocky-demo --command-id RunShellScript --scripts @/tmp/uc1-fix.sh
+    - echo "CPU-spin loops killed. Alert clears on its next evaluation (~1 min)."
+
+# UC2 - Windows Service Crash: a detached background loop on
+# vm-windows-demo (1229) repeatedly kills the Print Spooler service's
+# process every 30s, for as long as the loop runs - replaces the
+# earlier UC2 (4721 Kundenverwaltung, Postgres connection usage),
+# found live to read too similarly to UC1 (also a platform, also
+# metrics-only); this one is a Logs signal instead, see
+# alerting/platforms/1229-windows-server-basis/alert-rules.yaml's own
+# header comment for the full history.
+#
+# A single kill (an earlier version of this job) self-heals within ~5s
+# (this VM's default Spooler recovery policy is "RESTART, 5000ms x2")
+# and only ever logs one pair of Error events - found live that made
+# the alert's state reflect "an error happened recently" rather than
+# "is this actually still broken", clearing on its own after the
+# query's lookback window passed regardless of whether demo:uc2-fix
+# ever ran. Repeatedly re-killing the service every time it restarts
+# keeps genuine Error events (7031 "terminated unexpectedly") flowing
+# for as long as the underlying problem (this loop) persists -
+# confirmed live over several cycles - so the alert now tracks real
+# state, not a one-off burst. Detached via Start-Process (like UC1's
+# own nohup pattern on Linux), not a registered Scheduled Task -
+# simpler, and avoids installing anything persistent at the OS level.
+demo:uc2-break:
+  extends: .demo_uc
+  script:
+    - |
+      cat > /tmp/uc2-break.ps1 << 'EOF'
+      # Found live: Spooler's own default recovery policy only lists
+      # 2 restart actions before falling back to "take no action", and
+      # its failure counter only resets after 3600s (1h) of healthy
+      # running - both far too generous for this loop's own 30s kill
+      # interval. The counter never got a chance to reset between
+      # kills, so by the 3rd kill (~60-90s in) it exceeded the
+      # configured action count and Windows stopped restarting the
+      # service for good - the loop below only ever targets a
+      # *Running* instance, so once the service stayed Stopped, no
+      # further Error events were ever generated, and the alert aged
+      # out of its own lookback window on its own, regardless of
+      # whether demo:uc2-fix ever ran - exactly the failure mode this
+      # rule's own alert-rules.yaml comment says this approach was
+      # supposed to avoid. reset= 20 (less than the 30s kill interval)
+      # guarantees the counter is always back to zero before the next
+      # kill, so every single kill is perpetually treated as "the
+      # first failure" and restarts every time, for as long as this
+      # loop keeps running.
+      sc.exe failure Spooler reset= 20 actions= restart/5000
+      $loopScript = @'
+      while ($true) {
+        Get-CimInstance Win32_Service | Where-Object { $_.Name -eq "Spooler" -and $_.State -eq "Running" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+        Start-Sleep -Seconds 30
+      }
+      '@
+      Set-Content -Path C:\demo-uc2-kill-loop.ps1 -Value $loopScript
+      Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\demo-uc2-kill-loop.ps1" -WindowStyle Hidden
+      EOF
+    - az vm run-command invoke -g rg-bensc-001 -n vm-windows-demo --command-id RunPowerShellScript --scripts @/tmp/uc2-break.ps1
+    - echo "Print Spooler crash loop started (kills it every 30s) - '1229 Windows Server Basis - Print Spooler service crashed' should fire in ~1-2 min, see Grafana's Alerting page."
+
+demo:uc2-fix:
+  extends: .demo_uc
+  script:
+    - |
+      cat > /tmp/uc2-fix.ps1 << 'EOF'
+      Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*demo-uc2-kill-loop.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+      Remove-Item -Path C:\demo-uc2-kill-loop.ps1 -ErrorAction SilentlyContinue
+      EOF
+    - az vm run-command invoke -g rg-bensc-001 -n vm-windows-demo --command-id RunPowerShellScript --scripts @/tmp/uc2-fix.ps1
+    - echo "Crash loop stopped - Print Spooler stabilizes (its own recovery policy was never touched). Alert clears once no new errors appear within its lookback window (~2 min)."
+
+# UC3 - Kubernetes Microservices: flips the Astronomy Shop chart's own
+# flagd feature flag intlShippingSlowdown (its own official fault-
+# injection mechanism, not something this repo builds) by rewriting
+# the flagd-config ConfigMap's JSON and re-applying it. Found live:
+# despite flagd's own fsnotify file watcher, this deployment's flagd
+# pod does NOT actually pick up a ConfigMap content change on its
+# own (confirmed via its OFREP evaluation API staying on the old
+# variant for minutes) - its config volume is named "config-rw", most
+# likely seeded once at pod start rather than a live ConfigMap mount,
+# so a rollout restart is required after every patch. Verified live
+# both directions (break and fix) - the flag only actually changes
+# after the restart completes.
+demo:uc3-break:
+  extends: .demo_uc
+  script:
+    - |
+      kubectl get configmap flagd-config -n astronomy-shop -o jsonpath='{.data.demo\.flagd\.json}' > /tmp/flagd.json
+      python3 -c "
+      import json
+      with open('/tmp/flagd.json') as f:
+          d = json.load(f)
+      d['flags']['intlShippingSlowdown']['defaultVariant'] = '5sec'
+      with open('/tmp/flagd.json', 'w') as f:
+          json.dump(d, f)
+      "
+      kubectl create configmap flagd-config -n astronomy-shop --from-file=demo.flagd.json=/tmp/flagd.json --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl rollout restart deployment flagd -n astronomy-shop
+    - kubectl rollout status deployment flagd -n astronomy-shop --timeout=60s
+    - echo "flagd intlShippingSlowdown flipped to 5sec - '4720 OTel Astronomy Shop Demo - p95 latency high' should fire in ~1-2 min."
+
+demo:uc3-fix:
+  extends: .demo_uc
+  script:
+    - |
+      kubectl get configmap flagd-config -n astronomy-shop -o jsonpath='{.data.demo\.flagd\.json}' > /tmp/flagd.json
+      python3 -c "
+      import json
+      with open('/tmp/flagd.json') as f:
+          d = json.load(f)
+      d['flags']['intlShippingSlowdown']['defaultVariant'] = 'off'
+      with open('/tmp/flagd.json', 'w') as f:
+          json.dump(d, f)
+      "
+      kubectl create configmap flagd-config -n astronomy-shop --from-file=demo.flagd.json=/tmp/flagd.json --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl rollout restart deployment flagd -n astronomy-shop
+    - kubectl rollout status deployment flagd -n astronomy-shop --timeout=60s
+    - echo "flagd intlShippingSlowdown flipped back to off. Latency normalizes once the restart completes; the alert clears on its next evaluation."
+
+# UC4 - Multi-Tenancy: Ingestion Budget Enforcement (previously UC5;
+# moved up when the old UC4/Object Storage Usage was dropped outright,
+# no replacement - see alerting/README.md and README.md's Demo Use
+# Cases; 4015 stays onboarded, it just has no alert/Use Case of its
+# own anymore, and its own break/fix jobs were removed with it).
+#
+# Rewritten for the rate-limit/daily-budget decoupling redesign (see
+# scripts/provision.py's compute_overrides() and scripts/ingestion-
+# midnight-snapshot.py) - the original version here hammered
+# Spesenabrechnung's (4722) HTTP endpoint for ~90 seconds, back when
+# every tenant's per-second rate limit was tied to its own size tier,
+# making the fastest possible fill time a fixed ~4.8h regardless of
+# size (found live - not fixable by hammering harder or resizing). Now
+# that the per-second limit is generic and decoupled from a tenant's
+# own (still size-derived) daily budget, a small tenant's small budget
+# fills in well under two minutes at a sustained push - see
+# scripts/demo-uc4-flood.py's own docstring for the full rationale and
+# why Loki specifically. Demo tenant moved from 4722 to 4711
+# (Mitarbeiterverzeichnis, S-tier, 1 GiB/day - see README.md's Demo Use
+# Cases) in an earlier commit this session; this is the first time its
+# own break/fix jobs actually reflect that.
+demo:uc4-break:
+  extends: .demo_uc
+  script:
+    - kubectl -n observability port-forward svc/loki-gateway 3100:80 > /dev/null 2>&1 &
+    - PF_PID=$!
+    - sleep 3
+    - echo "Flooding Mitarbeiterverzeichnis's (4711-prod) Loki ingestion for ~2.5 minutes to push it over its daily budget..."
+    - python3 scripts/demo-uc4-flood.py
+    - kill $PF_PID
+    - echo "Flood complete. The daily-budget enforcer only checks every 2 minutes (not a real-time gate like the per-second rate limit is - found live this session, some overshoot past 100% before it catches up is expected), so allow up to ~2 more minutes for 'Tenant ingestion budget exhausted (>100% of daily budget)' to fire for 4711-prod and for its rate/burst limit to actually be throttled to near-zero on all four systems - see the Operator dashboard."
+
+# Runs scripts/ingestion-midnight-snapshot.py's --reset-tenant mode as a
+# one-off in-cluster Job (not from this runner directly - that mode
+# needs the ingestion-budget-enforcer ServiceAccount's in-cluster API
+# access, the same way the CronJob itself runs) to un-throttle
+# 4711-prod if throttled and reset its own midnight snapshot to right
+# now, without waiting for a real midnight rollover or touching any
+# other tenant.
+demo:uc4-fix:
+  extends: .demo_uc
+  script:
+    - |
+      cat > /tmp/uc4-fix-job.yaml << 'EOF'
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        generateName: demo-uc4-fix-
+        namespace: observability
+      spec:
+        backoffLimit: 0
+        template:
+          metadata:
+            annotations:
+              # Unmeshed, same as the CronJob it shares its script with
+              # (see that CronJob's own comment in
+              # terraform/environments/observability-stack/main.tf) -
+              # otherwise the Linkerd sidecar keeps this Job from ever
+              # completing and the wait below times out.
+              linkerd.io/inject: disabled
+          spec:
+            restartPolicy: Never
+            serviceAccountName: ingestion-budget-enforcer
+            containers:
+              - name: reset
+                image: python:3.15.2-slim
+                command: ["python3", "/scripts/snapshot.py", "--reset-tenant", "4711-prod"]
+                volumeMounts:
+                  - name: script
+                    mountPath: /scripts
+                  - name: budgets
+                    mountPath: /budgets
+            volumes:
+              - name: script
+                configMap:
+                  name: ingestion-midnight-snapshot-script
+              - name: budgets
+                configMap:
+                  name: tenant-ingestion-budgets
+      EOF
+      JOB_NAME=$(kubectl create -f /tmp/uc4-fix-job.yaml -o jsonpath='{.metadata.name}')
+      kubectl -n observability wait --for=condition=complete "job/${JOB_NAME}" --timeout=60s
+      kubectl -n observability logs "job/${JOB_NAME}"
+      kubectl -n observability delete job "${JOB_NAME}"
+    - echo "4711-prod un-throttled (if it was) and its daily usage reset to 0% for the rest of today - see the log above. The alert clears on its next evaluation."
+
+# ---------------------------------------------------------------------------
+# destroy stage - mirrors deploy, in reverse order. The six destroy:*
+# fleet-teardown jobs below are independent/freely runnable; no changes:
+# filter on any destroy:* job on purpose - tearing something down isn't
+# tied to what changed in a given push, it should stay a manual safety
+# valve available on any pipeline (except two narrow exclusions: an
+# onboarding MR-merge push, and tenants:apply's own follow-up push -
+# see .destroy_fleet's own rules/comment). destroy:observability-stack
+# and destroy:infra depend on the fleet jobs via `needs:` - see the
+# top-of-file comment for why.
+# ---------------------------------------------------------------------------
+
+.destroy_fleet:
+  stage: destroy
+  # Never actually inherited unmodified - same story as .deploy_fleet
+  # above (every real destroy:* job that extends this overrides image to
+  # the pure-Terraform hashicorp/terraform image). Kept as a sane
+  # default.
+  image: $CI_REGISTRY_IMAGE/ci-tools/base:v1
+  before_script:
+    - !reference [.setup_kubeconfig, script]
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use, so this only
+    # fires in exactly the pipeline where those two are about to run.
+    # A genuine human/infra push that doesn't touch manifests/**/*
+    # falls through to the rule below unaffected.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+
+# Coarser-grained than the deploy-fleets:* tier split on purpose:
+# deleting a VM or a namespace already takes every tier staged on top
+# of it down in one step (destroy:1286-linux-basis also covers 4711,
+# destroy:1229-windows-basis also covers 4722) - splitting destroy jobs
+# to match deploy's finer granularity would just be redundant work
+# against resources already gone.
+
+# Both below: pure Terraform (terraform destroy tears down the VM, NIC,
+# Public IP, NSG+rule, and OS disk together, same as the old scripts did
+# by hand) - see deploy-fleets:1286-linux-basis/deploy-fleets:1229-windows-basis's
+# own comment on why these override .destroy_fleet's image/before_script.
+destroy:aiops:
+  stage: destroy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use, so this only
+    # fires in exactly the pipeline where those two are about to run.
+    # A genuine human/infra push that doesn't touch manifests/**/*
+    # falls through to the rule below unaffected.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_aiops, script]
+    - terraform destroy -auto-approve
+
+destroy:1286-linux-basis:
+  stage: destroy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use, so this only
+    # fires in exactly the pipeline where those two are about to run.
+    # A genuine human/infra push that doesn't touch manifests/**/*
+    # falls through to the rule below unaffected.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_fleet_1286, script]
+    - terraform destroy -auto-approve
+
+destroy:1229-windows-basis:
+  stage: destroy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use, so this only
+    # fires in exactly the pipeline where those two are about to run.
+    # A genuine human/infra push that doesn't touch manifests/**/*
+    # falls through to the rule below unaffected.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_fleet_1229, script]
+    - terraform destroy -auto-approve
+
+destroy:4720-otel-astronomy-shop:
+  extends: .destroy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_fleet_4720, script]
+    - terraform destroy -auto-approve
+
+destroy:4721-kundenverwaltung:
+  # Also tears down Postgres (system 4139 folded into this same
+  # environment - see fleet-4139-postgresql/main.tf's own header
+  # comment) - there was never a separate destroy job for 4139 to begin
+  # with, this is the sole destroy job for this combined environment.
+  extends: .destroy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_fleet_4139, script]
+    - terraform destroy -auto-approve
+
+destroy:1294-netzwerk-basis:
+  extends: .destroy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_fleet_1294, script]
+    - terraform destroy -auto-approve
+
+destroy:4015-filestorage:
+  extends: .destroy_fleet
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  before_script: []
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_fleet_4015, script]
+    - terraform destroy -auto-approve
+
+# Onboarding-scoped, symmetric to tenants:rollout - independent/freely
+# runnable like the fleet-teardown jobs above, but must run BEFORE
+# destroy:observability-stack (not after, unlike the fleet-* jobs) -
+# see this stage's own top-of-file comment for why.
+destroy:tenants:
+  stage: destroy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.install_kubectl, script]
+    - !reference [.terraform_init_tenants, script]
+    - terraform destroy -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use, so this only
+    # fires in exactly the pipeline where those two are about to run.
+    # A genuine human/infra push that doesn't touch manifests/**/*
+    # falls through to the rule below unaffected.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  environment:
+    name: demo
+    action: stop
+
+# Reverse order from deploy: observability-stack-crs first (its
+# kubernetes_manifest resources must go before the CRDs backing them
+# do), then observability-stack itself. Needs destroy:tenants too (its
+# gateway CR's null_resource still needs the OpenTelemetryCollector CRD
+# this job's Helm release provides - see this stage's own top-of-file
+# comment).
+#
+# needs: deploy:observability-stack (optional: true) too - same
+# "skip if absent, wait if present" behavior as the seven jobs below:
+# a no-op on any pipeline where deploy:observability-stack's own rules
+# don't create it (this job stays freely, standalone runnable there,
+# unchanged from before), but a real gate on a web-sourced run (where
+# deploy:observability-stack always runs unattended, see the "deploy"
+# stage's own comment) - this job only becomes runnable there once that
+# same pipeline's deploy:observability-stack has actually succeeded, a
+# same-pipeline "deploy, verify, tear down" smoke-test flow.
+destroy:observability-stack:
+  stage: destroy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  needs:
+    - job: deploy:observability-stack
+      optional: true
+    - job: destroy:1286-linux-basis
+      optional: true
+    - job: destroy:1229-windows-basis
+      optional: true
+    - job: destroy:4720-otel-astronomy-shop
+      optional: true
+    - job: destroy:4721-kundenverwaltung
+      optional: true
+    - job: destroy:1294-netzwerk-basis
+      optional: true
+    - job: destroy:4015-filestorage
+      optional: true
+    - job: destroy:tenants
+      optional: true
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init_observability_stack_crs, script]
+    - terraform destroy -auto-approve
+    - !reference [.terraform_init_observability_stack, script]
+    - terraform destroy -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use, so this only
+    # fires in exactly the pipeline where those two are about to run.
+    # A genuine human/infra push that doesn't touch manifests/**/*
+    # falls through to the rule below unaffected.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  environment:
+    name: demo
+    action: stop
+
+destroy:infra:
+  stage: destroy
+  image:
+    name: hashicorp/terraform:1.17.2
+    entrypoint: [""]
+  needs:
+    - job: destroy:observability-stack
+      optional: true
+  script:
+    - !reference [.confirm_destroy, script]
+    - !reference [.terraform_init, script]
+    - terraform destroy -auto-approve
+  rules:
+    - !reference [.skip_self_service_requests, rules]
+    # Hidden on the onboarding MR-merge push itself - same changes:
+    # filter tenants:apply/tenants:rollout use, so this only
+    # fires in exactly the pipeline where those two are about to run.
+    # A genuine human/infra push that doesn't touch manifests/**/*
+    # falls through to the rule below unaffected.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - manifests/**/*
+      when: never
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  environment:
+    name: demo-infra
+    action: stop

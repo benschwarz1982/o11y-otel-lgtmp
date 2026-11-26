@@ -1,0 +1,57 @@
+---
+# Values override for the official OpenTelemetry Astronomy Shop Demo
+# (open-telemetry/opentelemetry-demo chart) - onboarded as system_id
+# 4720 "OTel Astronomy Shop Demo", platform_refs: ["4087"] (Cloud
+# Container Plattform), tenant "4720-prod" (see the onboarding repo's
+# manifests/applications/4720-otel-astronomy-shop-demo.yaml).
+#
+# The chart bundles its own full observability backend (a collector,
+# Jaeger, Prometheus, Grafana, OpenSearch) - all disabled here
+# regardless of instrumentation status, since we never want the bundled
+# backend running. Deliberately does NOT include the envOverrides that
+# redirect telemetry to this platform's gateway - see
+# instrumentation/applications/4720-otel-astronomy-shop/values-instrument.yaml
+# for that (instrumentation is a separate step from provisioning).
+# Read directly by terraform/environments/fleet-4720-otel-astronomy-shop's
+# helm_release (file() in its values list) - var.instrument controls
+# whether values-instrument.yaml is layered on top, replacing the old
+# fleet-4720-otel-astronomy-shop.sh/instrumentation-4720-otel-astronomy-shop.sh
+# two-step `helm upgrade --install` then `--reuse-values` dance.
+#
+# Manual install (namespace "astronomy-shop", separate from
+# "observability" - monitored workload, not platform infrastructure),
+# if not going through Terraform:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm upgrade --install astronomy-shop open-telemetry/opentelemetry-demo \
+#     -n astronomy-shop --create-namespace \
+#     -f helm/values/otel-demo-values.yaml
+
+opentelemetry-collector:
+  enabled: false
+jaeger:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+opensearch:
+  enabled: false
+
+components:
+  # Only exists to remote-manage the bundled opentelemetry-collector via
+  # OpAMP - orphaned now that collector is disabled above (nothing left
+  # for it to manage).
+  opamp-server:
+    enabled: false
+  # Static docs page about the demo itself - not part of the
+  # metrics/logs/traces story this deployment is here to demonstrate.
+  telemetry-docs:
+    enabled: false
+  # Chart 0.42 (demo 3.1) runs Locust with its web UI, which
+  # frontend-proxy serves under /loadgen/ on the public shop host -
+  # anyone could stop or flood the load test. Headless keeps generating
+  # the demo traffic without that UI.
+  load-generator:
+    envOverrides:
+      - name: LOCUST_HEADLESS
+        value: "true"

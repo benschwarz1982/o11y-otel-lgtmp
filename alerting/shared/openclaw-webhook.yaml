@@ -1,0 +1,196 @@
+---
+# Grafana webhook contact point + notification policy routing UC1's
+# existing alert ("1286 Linux Basis - host CPU > 80%",
+# alerting/platforms/1286-linux-basis/alert-rules.yaml) to OpenClaw
+# (README Open Points - ai-ops-azure integration) - the first contact
+# point/notification policy ever configured in this repo (see B11
+# Alerting in README.md: every other rule stays visible-only, never
+# delivered anywhere).
+#
+# No separate bridge/relay service needed - confirmed against Grafana's
+# own webhook-notifier source (grafana/alerting, receivers/webhook/v1/
+# config.go): authorization_scheme/authorization_credentials cover the
+# Bearer auth OpenClaw's gateway requires, and a Custom Payload template
+# builds the exact JSON body OpenClaw's endpoint expects, directly from
+# alert labels.
+#
+# data.ToJSON (not hand-built JSON text) is deliberate - guarantees
+# correct escaping regardless of what characters end up in
+# CommonLabels.alertname etc., rather than assuming label values never
+# contain a quote/newline.
+#
+# The bearer token is NOT in this file (F05/NFR-03): $__file{...} is
+# Grafana's own provisioning expansion, reading the token file that the
+# Secrets Store CSI driver mounts from the platform Key Vault (G12,
+# helm/values/grafana-values.yaml extraSecretMounts, SecretProviderClass
+# grafana-openclaw-hooks in terraform/environments/observability-stack).
+# Grafana expands it when it
+# provisions this file - no collision with the {{ }} payload template
+# below, which is Grafana's Go template engine, evaluated at
+# notification time.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: openclaw
+    receivers:
+      - uid: openclaw_webhook
+        type: webhook
+        settings:
+          # The in-cluster ClusterIP Service directly, not the public
+          # HTTPS URL - everything here (Grafana, Traefik, OpenClaw)
+          # already runs on the same cluster, so there is no reason to
+          # route a purely internal call out through the public
+          # LoadBalancer and back in.
+          #
+          # /hooks/agent (OpenClaw's dedicated gateway.hooks.* endpoint,
+          # terraform/environments/aiops's own openclaw.json template),
+          # not /v1/chat/completions - two independent reasons:
+          #   1. It responds asynchronously (HTTP 200 on admission, not
+          #      on full agent completion) - found live: the
+          #      chat-completions endpoint is synchronous, and once the
+          #      agent actually started reading a runbook and executing
+          #      SSH commands (real work, not the quick reply a test
+          #      "ping" gets), it regularly took longer than Grafana's
+          #      own webhook HTTP client timeout, which logged the
+          #      notification as failed ("context deadline exceeded")
+          #      even though OpenClaw had in fact received it and was
+          #      processing it correctly.
+          #   2. It uses its own dedicated token
+          #      (openclaw_hooks_token), separate from
+          #      openclaw_gateway_token/gateway.auth - unrelated to the
+          #      trustedProxies fix below, but keeps the browser login
+          #      token and the automation token independent.
+          #
+          # A prior version of this file routed through the public
+          # HTTPS URL specifically to make Grafana's call look like it
+          # came via Traefik (the one source already covered by
+          # OpenClaw's gateway.trustedProxies) - unnecessary hairpin
+          # routing for a same-cluster call, and it didn't reliably work
+          # anyway (Azure LoadBalancer hairpin NAT). The actual fix was
+          # at the network layer instead: Traefik now runs with
+          # hostNetwork: true (helm/values/traefik-values.yaml), so its
+          # own source IP is a node IP, and OpenClaw's trustedProxies is
+          # scoped to just those node IPs
+          # (terraform/environments/aiops/main.tf,
+          # data.kubernetes_nodes.all) instead of the whole VNet CIDR.
+          # Grafana's own pod IP now simply isn't in trustedProxies at
+          # all, so a direct call like this one is treated as a normal,
+          # unproxied client - no proxy_attribution_required check ever
+          # applies to it.
+          url: http://openclaw.openclaw.svc:18789/hooks/agent
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/etc/secrets/openclaw-hooks/token}
+          # sessionMode/sessionKey target the same session the browser's
+          # Control UI shows by default (agent:main:main, a "direct"
+          # kind session) - found live: /hooks/agent's own default
+          # (sessionMode: "isolated") creates a brand new, separate
+          # "cron"-kind session per call instead, invisible in the
+          # Control UI's default chat view even though the agent is
+          # genuinely processing the alert - correct for unrelated
+          # automation (e.g. two different webhooks that shouldn't
+          # share context), but wrong for this demo's whole point:
+          # watching the agent react to an alert live. Requires
+          # hooks.allowRequestSessionKey: true and a matching
+          # hooks.allowedSessionKeyPrefixes entry (openclaw/openclaw.json)
+          # - without both, OpenClaw ignores a request-supplied
+          # sessionKey and falls back to its own generated one anyway.
+          # .Status ("firing" if at least one alert in this
+          # notification is firing, "resolved" otherwise - Grafana's
+          # own notification-template data model) was never checked
+          # here - found live: every notification this contact point
+          # ever sent said "ALERT FIRING" verbatim, including the
+          # RESOLVED notification Grafana sends by default once an
+          # alert clears. OpenClaw had no way to distinguish "still
+          # firing" from "just resolved" from the message text alone -
+          # it can't check vm-windows-demo's actual state itself
+          # (advisory-only, no SSH/WinRM access, deliberately - see
+          # README B13), so an accurate status in the message itself
+          # is the only source of truth it has. Confirmed live this
+          # caused it to keep treating an already-resolved incident as
+          # ongoing.
+          payload:
+            template: |
+              {{- if eq .Status "resolved" -}}
+              {{ coll.Dict "agentId" "main" "sessionMode" "persistent" "sessionKey" "agent:main:main" "message" (printf "ALERT RESOLVED: %s on %s.\n\nThis alert has cleared - the underlying issue is no longer occurring as of now. If you previously proposed remediation steps for this alert and they were never confirmed/applied, no further action is needed." .CommonLabels.alertname (or .CommonLabels.host_name .CommonLabels.tenant)) | data.ToJSON }}
+              {{- else -}}
+              {{ coll.Dict "agentId" "main" "sessionMode" "persistent" "sessionKey" "agent:main:main" "message" (printf "ALERT FIRING: %s on %s.\n\nRunbook-Key: %s\n\nExecute the matching runbook for this alert if one exists (workspace/runbooks/<Runbook-Key>.md); otherwise propose remediation options and wait for confirmation." .CommonLabels.alertname (or .CommonLabels.host_name .CommonLabels.tenant) .CommonLabels.runbook_key) | data.ToJSON }}
+              {{- end -}}
+
+# The entire notification policy tree is one resource (Grafana's own
+# provisioning semantics - see file-provisioning docs). Found live:
+# two bugs in this file's previous version, both silently causing
+# Grafana's provisioning reload to reject the whole tree
+# (errorMessageID=alerting.notifications.routes.invalidFormat) and
+# fall back to its own untouched built-in default - which meant every
+# alert kept going to that default instead of ever reaching the
+# "openclaw" route below, with no visible error anywhere in the UI:
+#   1. receiver: "empty" doesn't correspond to any real contact point
+#      in this Grafana version - confirmed live, its actual built-in
+#      default receiver name is "grafana-default-email" (an older
+#      source-code check that found "empty" was apparently against a
+#      different Grafana version than what's actually deployed here).
+#   2. group_wait/group_interval/repeat_interval were missing
+#      entirely - present in every field in Grafana's own official
+#      file-provisioning example for both the root policy and every
+#      nested route, not just optional documentation filler.
+policies:
+  - orgId: 1
+    receiver: grafana-default-email
+    group_by: ["..."]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      # repeat_interval: 1m (not the root's 4h) - found live: this
+      # route's group_by: ["..."] groups by every label this alert
+      # carries, and every one of them (alertname, grafana_folder,
+      # host_name, runbook_key) is identical on every firing - there's
+      # no varying dimension like an instance ID. Alertmanager therefore
+      # treats every re-firing as the SAME persistent group rather than
+      # a new one, and repeat_interval throttles re-notifying a group
+      # from its last successful notify - even across a full resolve ->
+      # refire cycle in between, confirmed live (worked automatically
+      # once, then stayed silent - no error logged anywhere - for every
+      # later re-run within the same session, needing a manual webhook
+      # call each time to unblock it). A real production alert firing
+      # once and staying alertable for hours is exactly what a long
+      # repeat_interval is for; this demo's own repeated fire/resolve
+      # cycles within minutes are not, so this route gets its own much
+      # shorter value instead of inheriting the root's.
+      - receiver: openclaw
+        object_matchers:
+          - ["alertname", "=", "1286 Linux Basis - host CPU > 80%"]
+        group_by: ["..."]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 1m
+      # UC2's human-in-the-loop counterpart to UC1 above - same
+      # contact point, same reasoning for a short repeat_interval
+      # (identical labels on every firing, no varying dimension), the
+      # only difference is this alertname's runbook_key
+      # (1229-windows-server-basis-spoolercrash) has no matching file
+      # under /sre/runbooks/ on purpose, so AGENTS.md's own documented
+      # fallback engages: OpenClaw analyzes the alert independently and
+      # proposes remediation options in chat instead of executing
+      # anything, since there is nothing here for it to be pre-
+      # authorized to run.
+      - receiver: openclaw
+        object_matchers:
+          - ["alertname", "=", "1229 Windows Server Basis - Print Spooler service crashed"]
+        group_by: ["..."]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 1m
+      # Diagnosis-only runbook (shared-ingestion-budget-missing): the
+      # agent explains and proposes checks, it has no cluster access.
+      # repeat_interval 4h, not the UC demos' 1m - nothing to
+      # auto-remediate, a reminder per shift is enough.
+      - receiver: openclaw
+        object_matchers:
+          - ["alertname", "=", "Ingestion budget not enforced for a tenant"]
+        group_by: ["..."]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h

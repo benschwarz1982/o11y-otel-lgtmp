@@ -1,0 +1,28 @@
+---
+# PowerShell helpers for windows.yml: compare a PKCS#1 PEM key's RSA
+# modulus with a certificate's public key. Windows PowerShell 5.1 / .NET
+# Framework can't import PEM private keys, so the modulus is read from the
+# DER structure directly (RSAPrivateKey ::= SEQUENCE { version, modulus, ...}).
+otlp_client_cert_ps_helpers: |
+  function Read-DerLength([byte[]]$b, [ref]$i) {
+    $l = [int]$b[$i.Value]; $i.Value++
+    if ($l -lt 0x80) { return $l }
+    $v = 0
+    for ($k = 0; $k -lt ($l -band 0x7f); $k++) { $v = ($v -shl 8) -bor $b[$i.Value]; $i.Value++ }
+    return $v
+  }
+  function Get-KeyModulus([string]$path) {
+    $b64 = ((Get-Content -Raw $path) -replace '-----(BEGIN|END) RSA PRIVATE KEY-----', '') -replace '\s', ''
+    [byte[]]$b = [Convert]::FromBase64String($b64); $i = 0
+    if ($b[$i] -ne 0x30) { throw "key is not a DER SEQUENCE" }; $i++; [void](Read-DerLength $b ([ref]$i))
+    if ($b[$i] -ne 0x02) { throw "key has no version" }; $i++; $l = Read-DerLength $b ([ref]$i); $i += $l
+    if ($b[$i] -ne 0x02) { throw "key has no modulus" }; $i++; $l = Read-DerLength $b ([ref]$i)
+    [byte[]]$m = $b[$i..($i + $l - 1)]
+    while ($m.Length -gt 1 -and $m[0] -eq 0) { [byte[]]$m = $m[1..($m.Length - 1)] }
+    return [BitConverter]::ToString($m)
+  }
+  function Get-CertModulus([string]$path) {
+    $crt = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $path
+    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($crt)
+    return [BitConverter]::ToString($rsa.ExportParameters($false).Modulus)
+  }

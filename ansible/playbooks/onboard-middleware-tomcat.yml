@@ -1,0 +1,18 @@
+---
+# Middleware/app tier - Tomcat/Mitarbeiterverzeichnis (4711), run by the
+# fleet-4711-mitarbeiterverzeichnis (--tags install) and
+# instrumentation-4711-mitarbeiterverzeichnis (--tags instrument) CI
+# jobs against a one-host, freshly-generated inventory (see
+# ansible/inventory/generated.ini - not committed, written per run).
+# Reuses the platform_linux group onboard-platform-linux.yml already
+# targets - same vm-rocky-demo host, no new inventory group needed.
+#
+# Two tagged phases instead of two playbooks - see
+# roles/middleware-tomcat/tasks/main.yml's own comment for why.
+
+- name: Configure the Tomcat/Mitarbeiterverzeichnis app (4711)
+  hosts: platform_linux
+  gather_facts: false
+  become: true
+  roles:
+    - middleware-tomcat

@@ -1,0 +1,255 @@
+{
+  "title": "__SYSTEM_NAME__",
+  "uid": "system-__SYSTEM_ID__",
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "rgba(255, 96, 96, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "tags": [
+    "onboarding",
+    "__SYSTEM_TYPE__"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "custom",
+        "query": "__ENV_OPTIONS__",
+        "current": {},
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "System",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 7
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**__SYSTEM_NAME__** (`__SYSTEM_ID__`, type `__SYSTEM_TYPE__`)\n\nTenant: `__TENANT_ID__`\n\nOwner: __OWNER_TEAM__ (__OWNER_CONTACT__)\n\n__DEMO_NARRATIVE__"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Configured Ingestion Budget",
+      "type": "text",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 9,
+        "h": 7
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "__BUDGET_TABLE__\n\nRendered from the manifest at generation time - not a live query. See **Ingestion Budget Usage** alongside for the live percentage."
+      }
+    },
+    {
+      "id": 8,
+      "title": "Ingestion Budget Usage (per Signal)",
+      "description": "This tenant's real ingested volume since local midnight (Europe/Zurich), as a percentage of EACH signal's own daily budget - Metrics (Mimir), Logs (Loki), Traces (Tempo), Profiles (Pyroscope) each shown as its own line. Both values read directly from two gauges scripts/ingestion-midnight-snapshot.py pushes every 2 minutes (demo_ingestion_since_midnight, demo_ingestion_daily_budget) - no subtraction on this panel's own side (NFR-05 SECOND pre-test audit round, fixed here: this used to recompute \"current minus a separately-pushed day-start snapshot\" in this panel's OWN PromQL, independently of - and able to silently disagree with - the enforcer's own decision, with its own version of that script's pre-fix reset-insensitivity; both now read the exact same, already-correct value). Green below 80%, yellow 80-90%, red above 90%. Same formula as the Operator: Tenant Ingestion Budget dashboard's own panel, filtered to this one tenant. Queried via the Mimir-anonymous datasource, not __DATASOURCE_MIMIR__ - see README.md's Multi-Tenancy section for why (self-monitoring metrics land under the anonymous tenant).",
+      "type": "timeseries",
+      "datasource": "Mimir-anonymous",
+      "gridPos": {
+        "x": 17,
+        "y": 0,
+        "w": 7,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 120,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": false,
+          "expr": "100 * demo_ingestion_since_midnight{tenant=~\"__TENANT_ID__\"} / on(tenant, signal) demo_ingestion_daily_budget{tenant=~\"__TENANT_ID__\"}",
+          "legendFormat": "{{signal}}"
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "title": "Request Rate by Endpoint/Operation",
+      "description": "traces_spanmetrics_calls_total, generated automatically by Tempo's metrics-generator from real spans - no separate app instrumentation needed for this panel. Fixed 5m rate window, not $__rate_interval - found live that Mimir returns empty results for sum/max-by aggregations over a short rate() window on some high-cardinality metrics (likely a query-sharding edge case), even though the bare unaggregated rate() works fine at any window size.",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (span_name) (rate(traces_spanmetrics_calls_total[5m]))",
+          "legendFormat": "{{span_name}}"
+        }
+      ]
+    },
+    {
+      "id": 71,
+      "title": "Request Latency (p95) by Endpoint/Operation",
+      "description": "Also derived automatically from real spans via traces_spanmetrics_latency_bucket.",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, span_name) (rate(traces_spanmetrics_latency_bucket[5m])))",
+          "legendFormat": "{{span_name}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Recent Traces",
+      "description": "A table, not the \"traces\" panel type - Grafana's traces panel silently renders zero rows when Tempo's search response omits durationMs (happens for very fast, sub-millisecond traces), even though the underlying data is there. A table shows the same rows regardless.",
+      "type": "table",
+      "datasource": "__DATASOURCE_TEMPO__",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceqlSearch",
+          "query": "{}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Log Volume by Namespace",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_LOKI__",
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (k8s_namespace_name) (count_over_time({k8s_namespace_name=~\".+\"}[$__interval]))",
+          "legendFormat": "{{k8s_namespace_name}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Recent Logs",
+      "type": "logs",
+      "datasource": "__DATASOURCE_LOKI__",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 8
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{k8s_namespace_name=~\".+\"}"
+        }
+      ]
+    }
+  ]
+}

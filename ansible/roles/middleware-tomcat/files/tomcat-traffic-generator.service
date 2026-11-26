@@ -1,0 +1,10 @@
+[Unit]
+Description=Traffic generator for the Tomcat demo app (generates traces)
+After=tomcat.service
+
+[Service]
+ExecStart=/usr/local/bin/tomcat-traffic-generator.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

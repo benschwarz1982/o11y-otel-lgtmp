@@ -1,0 +1,19 @@
+---
+# G08 (FR-08): business services and the systems (system_id from
+# manifests/) they depend on. scripts/generate-rules.py turns this into
+# business_service:status:code (rules/anonymous/business-services.yaml):
+# the worst status of its member systems in env (default prod) -
+# 0 functional, 1 degraded, 2 unknown, 3 disrupted.
+services:
+  - name: Kundenservice
+    description: Kundendaten erfassen und pflegen
+    systems: ["4721", "4711", "4087"]
+  - name: Online-Shop
+    description: Bestellungen im Astronomy Shop
+    systems: ["4720", "4087"]
+  - name: Spesenprozess
+    description: Spesen erfassen, genehmigen, Belege ablegen
+    systems: ["4722", "4711", "4015"]
+  - name: Basis-Infrastruktur
+    description: Server, Netzwerk und Container-Plattform
+    systems: ["1229", "1286", "1294", "4087"]

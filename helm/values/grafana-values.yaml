@@ -1,0 +1,144 @@
+---
+# Helm values for Grafana. Using --set with "grafana\.ini...." is error-prone
+# (escaping the dot in "grafana.ini" is easily lost on copy-paste, without
+# helm throwing an error - root_url then gets silently set in the wrong
+# place). A values file with a real YAML key avoids this.
+persistence:
+  enabled: true
+  size: 5Gi
+
+# ReadWriteOnce PVC + a single replica deadlocks under the chart's
+# default RollingUpdate strategy: the new pod can't attach the volume
+# while the old one still holds it, and Kubernetes won't kill the old
+# one until the new one is ready - found live on the first helm upgrade
+# that changed the pod template after this file already had a
+# persistent volume. Recreate avoids the standoff by tearing the old
+# pod down first.
+deploymentStrategy:
+  type: Recreate
+
+grafana.ini:
+  server:
+    root_url: https://grafana.sre.fs167.ch
+
+# Automatic provisioning instead of manual UI clicks under
+# Connections > Data Sources (README step B5). This static list is
+# deliberately limited to genuinely tenant-agnostic datasources - see
+# sidecar.datasources below for every onboarded tenant's own triplet,
+# 4087-prod (the platform itself) included (IaC Roadmap milestone,
+# done: 4087 used to be special-cased here as a static "generic ad-hoc
+# Explore" triplet plus its own named one, existing the moment
+# deploy:infra/deploy:observability-stack did, before any onboarding -
+# now it goes through the same onboarding-repo request/approval flow
+# and deploy:tenants rollout as every other system, no exceptions).
+# "Mimir-anonymous" is the one datasource that's genuinely
+# platform-scoped, not tenant data: it's pinned to the "anonymous"
+# tenant that all self-monitoring data (the collector's own metrics,
+# and Mimir's own operational metrics scraped via
+# otel-gateway-collector.yaml's prometheus/self and prometheus/mimir-self
+# jobs) lands under, used by the shared operator dashboard and the
+# OpenTelemetry Collector self-monitoring dashboard - hand-authored and
+# never touched by the onboarding repo's scripts/provision.py.
+# No equivalent "Pyroscope-anonymous" - unlike Mimir, nothing in this
+# repo ever profiles under the "anonymous" tenant (every app agent
+# tags with its own tenant, see B12 in the main README), so a static
+# platform-scoped Pyroscope datasource would have no actual data to
+# show - every onboarded tenant still gets its own
+# Pyroscope-<tenant_id> datasource via sidecar.datasources below.
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Mimir-anonymous
+        uid: mimir-anonymous
+        type: prometheus
+        url: http://mimir-gateway.observability.svc:80/prometheus
+        access: proxy
+        jsonData:
+          httpHeaderName1: X-Scope-OrgID
+          # This repo's Mimir has its ruler scaled to 0 (mimir-values.yaml,
+          # "not needed for demo" - alert rules are evaluated by Grafana's
+          # own engine, not Mimir's) - manageAlerts defaults to true and
+          # makes Grafana's Alerting page also try to fetch "data source-
+          # managed rules" from Mimir's ruler API, which doesn't exist here
+          # ("Errors loading rules from Mimir-anonymous"). Confirmed via
+          # Grafana's own docs this is the intended off-switch for exactly
+          # this case, not a workaround.
+          manageAlerts: false
+        secureJsonData:
+          httpHeaderValue1: "anonymous"
+
+# Automatic dashboard provisioning instead of manual UI import - the sidecar
+# watches for ConfigMaps labeled grafana_dashboard=1 in this namespace and
+# imports/updates their dashboard JSON automatically. Dashboards themselves
+# are applied as plain ConfigMaps from dashboards/ (see
+# terraform/environments/observability-stack's kubernetes_config_map.dashboards
+# and scripts/deploy-tenants.sh), not defined inline here, so large
+# dashboard JSON doesn't have to be YAML-escaped into this values file.
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    folder: /tmp/dashboards
+    # Per-environment Grafana folders (prod/eng/at) plus a top-level
+    # "shared" folder for cross-tenant dashboards (operator, collector
+    # self-monitoring) - each dashboard ConfigMap carries a
+    # grafana_folder annotation naming which one it belongs to; the
+    # sidecar writes it into that subfolder under sidecar.dashboards.folder,
+    # and foldersFromFilesStructure below makes the dashboard provider
+    # turn that subfolder into a real Grafana folder of the same name.
+    # The annotation value can itself contain a "/" (e.g. "prod/1286")
+    # to nest one level deeper, per system_id - see
+    # terraform/environments/tenants/main.tf's locals.dashboards, which
+    # computes exactly that.
+    folderAnnotation: grafana_folder
+    provider:
+      name: default
+      folder: ""
+      foldersFromFilesStructure: true
+  # Per-tenant datasources (everything except the static platform-scoped
+  # ones above) as ConfigMaps under datasources/, applied by
+  # deploy:tenants rather than deploy:observability-stack - auto-generated by the
+  # onboarding repo's scripts/provision.py
+  # (update_gateway_tenant_allowlist()'s sibling, update_grafana_datasources()).
+  # Unlike dashboards, Grafana loads these straight from its own native
+  # provisioning folder - no separate provider/folder config needed.
+  datasources:
+    enabled: true
+    label: grafana_datasource
+    labelValue: "1"
+  # Automatic Grafana Alerting (Unified Alerting) rule provisioning -
+  # same ConfigMap+sidecar auto-discovery pattern as dashboards/
+  # datasources above, but rules only: NO contact points, NO
+  # notification policies, NO delivery channel (SMTP/Slack/etc.) is
+  # configured anywhere in this repo - a firing/pending alert is only
+  # ever visible on Grafana's own Alerting page, nothing gets sent
+  # anywhere (see alerting/README.md). Unlike sidecar.dashboards,
+  # there's no folder/folderAnnotation/provider sub-key here: the
+  # sidecar hardcodes its mount to Grafana's native alerting
+  # provisioning folder, and which Grafana folder an alert group lands
+  # in is a `folder:` field inside the alert-rule YAML content itself,
+  # not derived from any Kubernetes label/annotation.
+  alerts:
+    enabled: true
+    label: grafana_alert
+    labelValue: "1"
+
+# F05/NFR-03: OpenClaw's hook token as a file, read by the webhook
+# contact point via $__file{} (alerting/shared/openclaw-webhook.yaml)
+# instead of being rendered into that contact point's ConfigMap. The
+# Secret is created by terraform/environments/observability-stack
+# before this release.
+extraSecretMounts:
+  # G12: from the platform Key Vault via the Secrets Store CSI driver
+  # (SecretProviderClass grafana-openclaw-hooks, terraform/environments/
+  # observability-stack) - file "token", no Kubernetes Secret.
+  - name: openclaw-hooks
+    mountPath: /etc/secrets/openclaw-hooks
+    readOnly: true
+    csi:
+      driver: secrets-store.csi.k8s.io
+      readOnly: true
+      volumeAttributes:
+        secretProviderClass: grafana-openclaw-hooks

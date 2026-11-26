@@ -1,0 +1,6 @@
+# Top-level dependencies of validate:ansible (.gitlab-ci.yml).
+# The full "ansible" package, not ansible-core: it bundles ansible.windows,
+# see that job's own comment.
+# Edit this file, then regenerate the .txt - see README.md in this directory.
+ansible
+ansible-lint

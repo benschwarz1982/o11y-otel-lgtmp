@@ -1,0 +1,110 @@
+---
+# instrumentation/platforms/1294-netzwerk-basis/config.yaml
+#
+# This system's (1294 Netzwerk Basis) actual live config - Terraform
+# reads this file directly (fleet-1294-netzwerk-basis/main.tf's
+# file()) and applies it as this pod's ConfigMap once var.instrument
+# is true (see config-bare.yaml for the pre-instrumentation
+# placeholder that ships before that). Values below are concrete for
+# this one system, not `<PLACEHOLDER>`s - see README.md in this
+# directory for a real switch/router/firewall instead.
+#
+# Polls the snmpd sidecar in the same pod over real SNMP (v2c,
+# community "public") for standard MIB-II interface counters
+# (IF-MIB::ifTable) and forwards them tagged as tenant 1294-prod.
+receivers:
+  snmp:
+    collection_interval: 30s
+    # Found live: this receiver's scraperhelper takes its very first
+    # scrape immediately on container start (no delay before the first
+    # tick by default), racing the snmpd sidecar's own `apt-get
+    # install snmpd` (terraform/environments/fleet-1294-netzwerk-basis/
+    # main.tf - several seconds). That first "connection refused"
+    # wedges this receiver's scrape loop permanently - no further
+    # scrape is ever attempted again, even once snmpd is confirmed up
+    # and accepting connections minutes later (a real otelcol-contrib
+    # 0.158.0 snmpreceiver bug, not a config mistake). initial_delay is
+    # a standard scraperhelper.ControllerConfig field (embedded here
+    # via mapstructure `,squash`, same field hostmetricsreceiver etc.
+    # use) - delaying the first scrape past snmpd's install time avoids
+    # ever triggering the bug, rather than working around its (broken)
+    # retry behavior. Confirmed live: zero scrape errors and continuous
+    # successful SNMP walks every 30s after this fix, versus a single
+    # immediate failure and total silence forever afterward before it.
+    initial_delay: 20s
+    endpoint: udp://127.0.0.1:161
+    version: v2c
+    community: public
+    resource_attributes:
+      interface:
+        oid: "1.3.6.1.2.1.2.2.1.2"  # ifDescr
+    attributes:
+      direction:
+        enum:
+          - in
+          - out
+    metrics:
+      network.io:
+        unit: "By"
+        description: "Bytes transferred per network interface"
+        sum:
+          aggregation: cumulative
+          monotonic: true
+          value_type: int
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.10"  # ifInOctets
+            resource_attributes: [interface]
+            attributes:
+              - name: direction
+                value: in
+          - oid: "1.3.6.1.2.1.2.2.1.16"  # ifOutOctets
+            resource_attributes: [interface]
+            attributes:
+              - name: direction
+                value: out
+      network.errors:
+        unit: "1"
+        description: "Errors per network interface"
+        sum:
+          aggregation: cumulative
+          monotonic: true
+          value_type: int
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.14"  # ifInErrors
+            resource_attributes: [interface]
+            attributes:
+              - name: direction
+                value: in
+          - oid: "1.3.6.1.2.1.2.2.1.20"  # ifOutErrors
+            resource_attributes: [interface]
+            attributes:
+              - name: direction
+                value: out
+
+processors:
+  batch: {}
+  # schema/core.yaml's Core Schema - static per this platform
+  # template, doesn't vary per tenant.
+  resource:
+    attributes:
+      - key: platform.type
+        value: network
+        action: upsert
+      - key: deployment.environment
+        value: prod
+        action: upsert
+
+exporters:
+  otlphttp:
+    endpoint: http://otel-gateway-collector.observability.svc.cluster.local:4318
+    tls:
+      insecure: true
+    headers:
+      tenant_id: "1294-prod"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [snmp]
+      processors: [resource, batch]
+      exporters: [otlphttp]

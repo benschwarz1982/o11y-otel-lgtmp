@@ -1,0 +1,121 @@
+---
+# Tempo - Distributed Mode, minimal for demo on AKS
+# F24/NFR-03: the rendered config embeds the Azure storage account
+# key - kept in a Secret instead of the chart's default ConfigMap
+# (readable by anyone allowed to read ConfigMaps in this namespace).
+configStorageType: Secret
+
+tempo:
+  # livenessProbe/readinessProbe for every Tempo component. Widened
+  # (periodSeconds/failureThreshold) when Tempo 2's compactor waited up to
+  # 5 minutes for its ring before /ready; kept for Tempo 3, whose
+  # block-builder and live-store first replay their Kafka partition.
+  livenessProbe:
+    httpGet:
+      path: /ready
+      port: http-metrics
+    initialDelaySeconds: 60
+    timeoutSeconds: 5
+    periodSeconds: 30
+    failureThreshold: 12
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: http-metrics
+    initialDelaySeconds: 30
+    timeoutSeconds: 1
+    periodSeconds: 30
+    failureThreshold: 12
+  structuredConfig:
+    # Multi-tenancy for the onboarding process (see
+    # observability-otel-demo-onboarding repo and the main README's
+    # "Multi-Tenancy (Onboarding)" section) - the gateway's headers_setter
+    # extension already forwards each client's tenant_id as X-Scope-OrgID
+    # (collector-gateway/otel-gateway-collector.yaml); Tempo just
+    # needed this flag to actually honor it instead of ignoring it.
+    # The metrics-generator automatically forwards the same X-Scope-OrgID
+    # on its remote_write to Mimir once this is on (remote_write_add_org_id_header
+    # defaults to true) - no separate tenant config needed for that path.
+    multitenancy_enabled: true
+
+# storage_account_name/storage_account_key are injected via Terraform
+# set/set_sensitive (terraform/environments/observability-stack/main.tf's
+# own helm_release.tempo) - never written here. Not Workload Identity
+# (use_federated_token) despite Tempo genuinely supporting it - found
+# live, this subscription's restricted "Playground" sandbox denies the
+# deploying Service Principal Microsoft.Authorization/roleAssignments/
+# write on any scope, so the role grant a workload identity needs to
+# actually read/write blobs can't be created here. Same account-key auth
+# as every other backend in this repo instead.
+storage:
+  trace:
+    backend: azure
+    azure:
+      container_name: tempo-traces
+
+traces:
+  otlp:
+    grpc:
+      enabled: true
+    http:
+      enabled: true
+
+# Tempo 3 write path: distributors write spans to Kafka, block-builders
+# cut blocks into object storage, live-stores serve the last minutes, and
+# backend-scheduler/backend-worker replace Tempo 2's compactor. The
+# broker is this repo's own single-node Kafka (tempo-kafka, see
+# terraform/environments/observability-stack) - deliberately not Mimir's
+# bundled one, so the two backends don't share a failure point.
+# One partition, so exactly one block-builder and one live-store (the
+# chart requires replicas == partitions).
+ingest:
+  kafka:
+    address: tempo-kafka.observability.svc.cluster.local:9092
+    topic: tempo-traces
+    auto_create_topic_enabled: true
+    auto_create_topic_default_partitions: 1
+
+distributor:
+  replicas: 1
+blockBuilder:
+  replicas: 1
+liveStore:
+  replicas: 1
+  # Replays its Kafka partition before /ready; the startup probe keeps
+  # the shared liveness probe from restarting it during a long replay.
+  startupProbe:
+    httpGet:
+      path: /ready
+      port: http-metrics
+    periodSeconds: 30
+    failureThreshold: 40
+backendScheduler:
+  enabled: true
+backendWorker:
+  replicas: 1
+querier:
+  replicas: 1
+queryFrontend:
+  replicas: 1
+
+# local-blocks (TraceQL metrics) is gone from the metrics-generator in
+# Tempo 3 - the live-store serves recent data and the block-builder
+# writes blocks; tempo-cli migrate config drops it the same way.
+metricsGenerator:
+  enabled: true
+  replicas: 1
+  config:
+    processor:
+      service_graphs: {}
+      span_metrics: {}
+    storage:
+      remote_write:
+        - url: http://mimir-gateway.observability.svc/api/v1/push
+          send_exemplars: true
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs
+        - span-metrics

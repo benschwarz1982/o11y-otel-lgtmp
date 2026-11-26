@@ -1,0 +1,5 @@
+---
+- name: Restart otelcol-tomcat
+  ansible.builtin.systemd:
+    name: otelcol-tomcat
+    state: restarted

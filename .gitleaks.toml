@@ -1,0 +1,18 @@
+# gitleaks configuration for validate:secrets (.gitlab-ci.yml).
+# Extends the built-in rule set - nothing is switched off globally.
+[extend]
+useDefault = true
+
+# The pipeline trigger token embedded in the self-service form (and
+# quoted in the README's curl examples) is public by design - see the
+# README's "Processes" section: it can only start the tenants:*-mr jobs,
+# never anything deploy-related. Allowed by token shape (glptt-...) AND
+# path, not by its literal value, so rotating the token needs no change
+# here - and a trigger token showing up in any other file is still
+# reported.
+[[allowlists]]
+description = "Public pipeline trigger token of the self-service onboarding form"
+condition = "AND"
+regexTarget = "match"
+regexes = ['''glptt-[A-Za-z0-9_-]+''']
+paths = ['''^form/index\.html$''', '''^README\.md$''']

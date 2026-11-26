@@ -1,0 +1,17 @@
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openclaw-ingress
+  namespace: openclaw
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`openclaw.sre.fs167.ch`)
+      kind: Rule
+      services:
+        - name: openclaw
+          port: 18789
+  tls:
+    secretName: openclaw-tls-secret

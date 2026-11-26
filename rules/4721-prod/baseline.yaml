@@ -1,0 +1,114 @@
+---
+# G04 (FR-06): baseline and anomaly alerting for Kundenverwaltung's
+# throughput, plus the calendar these alerts use. Hand-written (no
+# GENERATED banner) - loaded into tenant 4721-prod's Mimir ruler by
+# scripts/sync-mimir-rules.py together with the generated files.
+# Unit tests: rules/4721-prod/tests/ (scripts/test-rules.py).
+#
+# Baseline = the same hour of the week over the last three weeks
+# (read from the raw span metrics, so it works without waiting three
+# weeks for recorded history; weeks without data are skipped, not
+# counted as 0). Bands, each the wider of a relative and a statistical
+# margin so a very stable history doesn't make every wiggle an alert:
+#   warning   baseline +/- max(30%, 2 x stddev)
+#   critical  baseline +/- max(60%, 4 x stddev)
+# Upper bounds alert around the clock, lower bounds only during business
+# hours (low traffic at night is normal). Nothing alerts during the
+# maintenance window. If there is no baseline yet (new system), the band
+# alerts stay silent - only the absence alert applies.
+groups:
+  - name: calendar
+    interval: 1m
+    rules:
+      # Europe/Zurich DST: from the last Sunday of March to the last
+      # Sunday of October (the switch hour itself is not modelled).
+      # day_of_month - day_of_week >= 25 <=> on or after the last Sunday.
+      - record: calendar:dst:bool
+        expr: |
+          (month(vector(time())) > bool 3) * (month(vector(time())) < bool 10)
+          + (month(vector(time())) == bool 3) * ((day_of_month(vector(time())) - day_of_week(vector(time()))) >= bool 25)
+          + (month(vector(time())) == bool 10) * ((day_of_month(vector(time())) - day_of_week(vector(time()))) < bool 25)
+      - record: calendar:local_hour
+        expr: (hour(vector(time())) + 1 + calendar:dst:bool) % 24
+      # 0 = Sunday; +1 when local time is already past midnight.
+      - record: calendar:local_day_of_week
+        expr: (day_of_week(vector(time())) + ((hour(vector(time())) + 1 + calendar:dst:bool) >= bool 24)) % 7
+      - record: calendar:business_hours:bool
+        expr: |
+          (calendar:local_day_of_week >= bool 1) * (calendar:local_day_of_week <= bool 5)
+          * (calendar:local_hour >= bool 7) * (calendar:local_hour < bool 19)
+      # Weekly maintenance window: Sunday 02:00-04:00 local time.
+      - record: calendar:maintenance_window:bool
+        expr: (calendar:local_day_of_week == bool 0) * (calendar:local_hour >= bool 2) * (calendar:local_hour < bool 4)
+
+  - name: baseline-kundenverwaltung
+    interval: 1m
+    rules:
+      - record: kundenverwaltung:span_calls:rate5m
+        expr: sum(rate(traces_spanmetrics_calls_total{service="kundenverwaltung"}[5m]))
+      - record: kundenverwaltung:span_calls:baseline_weeks
+        expr: |
+          label_replace(sum(rate(traces_spanmetrics_calls_total{service="kundenverwaltung"}[1h] offset 1w)), "week", "1", "", "")
+          or label_replace(sum(rate(traces_spanmetrics_calls_total{service="kundenverwaltung"}[1h] offset 2w)), "week", "2", "", "")
+          or label_replace(sum(rate(traces_spanmetrics_calls_total{service="kundenverwaltung"}[1h] offset 3w)), "week", "3", "", "")
+      - record: kundenverwaltung:span_calls:baseline
+        expr: avg(kundenverwaltung:span_calls:baseline_weeks)
+      - record: kundenverwaltung:span_calls:baseline_stddev
+        expr: stddev(kundenverwaltung:span_calls:baseline_weeks)
+      - record: kundenverwaltung:span_calls:band_warning
+        expr: max(label_replace(0.3 * kundenverwaltung:span_calls:baseline, "m", "rel", "", "") or label_replace(2 * kundenverwaltung:span_calls:baseline_stddev, "m", "sd", "", ""))
+      - record: kundenverwaltung:span_calls:band_critical
+        expr: max(label_replace(0.6 * kundenverwaltung:span_calls:baseline, "m", "rel", "", "") or label_replace(4 * kundenverwaltung:span_calls:baseline_stddev, "m", "sd", "", ""))
+
+  - name: anomaly-kundenverwaltung
+    interval: 1m
+    rules:
+      - alert: KundenverwaltungThroughputHighCritical
+        expr: |
+          kundenverwaltung:span_calls:rate5m > (kundenverwaltung:span_calls:baseline + kundenverwaltung:span_calls:band_critical)
+          unless on() (calendar:maintenance_window:bool == 1)
+        for: 10m
+        labels: {severity: critical, tenant: 4721-prod, alert_class: baseline}
+        annotations:
+          summary: Kundenverwaltung throughput far above its weekly baseline
+          description: "{{ $value | humanize }} calls/s, more than baseline + max(60%, 4 stddev)."
+      - alert: KundenverwaltungThroughputHighWarning
+        expr: |
+          kundenverwaltung:span_calls:rate5m > (kundenverwaltung:span_calls:baseline + kundenverwaltung:span_calls:band_warning)
+          unless on() (calendar:maintenance_window:bool == 1)
+        for: 15m
+        labels: {severity: warning, tenant: 4721-prod, alert_class: baseline}
+        annotations:
+          summary: Kundenverwaltung throughput above its weekly baseline
+          description: "{{ $value | humanize }} calls/s, more than baseline + max(30%, 2 stddev)."
+      - alert: KundenverwaltungThroughputLowCritical
+        expr: |
+          kundenverwaltung:span_calls:rate5m < (kundenverwaltung:span_calls:baseline - kundenverwaltung:span_calls:band_critical)
+          and on() (calendar:business_hours:bool == 1)
+          unless on() (calendar:maintenance_window:bool == 1)
+        for: 10m
+        labels: {severity: critical, tenant: 4721-prod, alert_class: baseline}
+        annotations:
+          summary: Kundenverwaltung throughput far below its weekly baseline during business hours
+          description: "{{ $value | humanize }} calls/s, less than baseline - max(60%, 4 stddev)."
+      - alert: KundenverwaltungThroughputLowWarning
+        expr: |
+          kundenverwaltung:span_calls:rate5m < (kundenverwaltung:span_calls:baseline - kundenverwaltung:span_calls:band_warning)
+          and on() (calendar:business_hours:bool == 1)
+          unless on() (calendar:maintenance_window:bool == 1)
+        for: 15m
+        labels: {severity: warning, tenant: 4721-prod, alert_class: baseline}
+        annotations:
+          summary: Kundenverwaltung throughput below its weekly baseline during business hours
+          description: "{{ $value | humanize }} calls/s, less than baseline - max(30%, 2 stddev)."
+      # Absence: no span metrics at all - around the clock, independent of
+      # any baseline.
+      - alert: KundenverwaltungTelemetryMissing
+        expr: |
+          absent_over_time(traces_spanmetrics_calls_total{service="kundenverwaltung"}[15m])
+          unless on() (calendar:maintenance_window:bool == 1)
+        for: 5m
+        labels: {severity: critical, tenant: 4721-prod, alert_class: baseline}
+        annotations:
+          summary: No span metrics from Kundenverwaltung for 15 minutes
+          description: Kundenverwaltung sends no traces (application down, collector broken or the tenant's budget throttled). Its baseline alerts can't evaluate meanwhile.

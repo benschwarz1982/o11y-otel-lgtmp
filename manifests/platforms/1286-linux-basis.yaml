@@ -1,0 +1,12 @@
+---
+system_id: '1286'
+type: platform
+name: Linux Basis
+owner:
+  team: Platform Engineering
+  contact: platform-team@example.com
+cost_center: CC-1286
+dashboard_template: platforms/linux-host.template.json
+environments:
+  - env: prod
+    size: S

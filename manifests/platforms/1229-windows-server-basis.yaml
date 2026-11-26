@@ -1,0 +1,12 @@
+---
+system_id: '1229'
+type: platform
+name: Windows Server Basis
+owner:
+  team: Platform Engineering
+  contact: platform-team@example.com
+cost_center: CC-1229
+dashboard_template: platforms/windows-host.template.json
+environments:
+  - env: prod
+    size: S

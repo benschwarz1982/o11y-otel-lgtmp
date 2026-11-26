@@ -1,0 +1,126 @@
+---
+# Ansible translation of scripts/instrumentation-1286-linux-basis.sh -
+# installs and configures the platform's own OTel collector, rendering
+# instrumentation/platforms/1286-linux-basis/config.yaml directly (the single
+# canonical copy - no separate mirror lives under this role's own
+# templates/ anymore). Platform-team-owned, no application awareness.
+
+- name: Create the collector package cache directory
+  # Root-only download location instead of world-writable /tmp, so no
+  # other local user can pre-place a package that dnf then installs as
+  # root (GPG checking is off - upstream doesn't sign the RPMs).
+  ansible.builtin.file:
+    path: /var/cache/otelcol-contrib
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Download OTel Collector RPM
+  ansible.builtin.get_url:
+    url: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ otel_collector_version }}/otelcol-contrib_{{ otel_collector_version }}_linux_amd64.rpm"
+    dest: /var/cache/otelcol-contrib/otelcol-contrib.rpm
+    # Upstream publishes a bare-hash .sha256 next to every artifact. With
+    # a checksum get_url re-checks an existing dest and downloads again on
+    # a mismatch, so a version bump replaces the cached package.
+    checksum: "sha256:{{ lookup('ansible.builtin.url', 'https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v' ~ otel_collector_version ~ '/otelcol-contrib_' ~ otel_collector_version ~ '_linux_amd64.rpm.sha256') | trim }}"
+    mode: "0600"
+
+- name: Install OTel Collector RPM
+  ansible.builtin.dnf:
+    name: /var/cache/otelcol-contrib/otelcol-contrib.rpm
+    state: present
+    disable_gpg_check: true
+  register: otelcol_package
+  notify: Restart otelcol-contrib
+
+- name: Read service states after a collector upgrade
+  ansible.builtin.service_facts:
+  when: otelcol_package is changed
+
+- name: Restart the Tomcat relay collector on the new binary
+  # otelcol-tomcat (ansible/roles/middleware-tomcat) runs the same
+  # /usr/bin/otelcol-contrib; a running process keeps executing the old
+  # binary until it is restarted. Left alone when absent or stopped.
+  ansible.builtin.systemd:
+    name: otelcol-tomcat
+    state: restarted
+  when:
+    - otelcol_package is changed
+    - (ansible_facts.services['otelcol-tomcat.service'].state | default('')) == 'running'
+
+# OTLP mTLS client certificate (generated on the VM, signed by the
+# platform tenant's Issuer, renewed before expiry - F11) and the root CA
+# that verifies the Gateway's server certificate (F08).
+- name: Manage the OTLP client certificate
+  ansible.builtin.import_role:
+    name: otlp_client_cert
+    tasks_from: linux
+  vars:
+    otlp_client_cert_tenant_id: "{{ tenant_id }}"
+    otlp_client_cert_dir: /etc/otelcol-contrib/tls
+    otlp_client_cert_group: otelcol-contrib
+
+- name: Restart the collector when its certificate or CA changed
+  ansible.builtin.debug:
+    msg: "OTLP client certificate or CA changed - restarting otelcol-contrib"
+  changed_when: otlp_client_cert_changed | bool
+  when: otlp_client_cert_changed | bool
+  notify: Restart otelcol-contrib
+
+- name: Deploy collector config
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../../instrumentation/platforms/1286-linux-basis/config.yaml"
+    dest: /etc/otelcol-contrib/config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart otelcol-contrib
+
+- name: Create systemd override directory
+  # ansible.builtin.copy (unlike the original script's `mkdir -p` +
+  # `tee`) does not create missing parent directories on its own -
+  # found live: "Destination directory ...otelcol-contrib.service.d
+  # does not exist".
+  ansible.builtin.file:
+    path: /etc/systemd/system/otelcol-contrib.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Systemd override - HOSTNAME/os-release env vars
+  # systemd services don't inherit shell environment variables -
+  # ${env:HOSTNAME} in the collector config would otherwise be empty
+  # and startup would fail. /etc/os-release is already in systemd
+  # EnvironmentFile syntax, reused directly for ${env:NAME}/
+  # ${env:VERSION_ID} - see instrumentation/platforms/1286-linux-basis/config.yaml's
+  # own comment.
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/otelcol-contrib.service.d/override.conf
+    content: |
+      [Service]
+      Environment=HOSTNAME=%H
+      EnvironmentFile=/etc/os-release
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart otelcol-contrib
+
+- name: Allow otelcol-contrib to read the systemd journal
+  # The collector runs under its own system user, not root - without
+  # this the journald receiver fails with "insufficient permissions".
+  ansible.builtin.user:
+    name: otelcol-contrib
+    groups: systemd-journal
+    append: true
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start otelcol-contrib
+  ansible.builtin.systemd:
+    name: otelcol-contrib
+    enabled: true
+    state: started

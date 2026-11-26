@@ -1,0 +1,81 @@
+{# instrumentation/middleware/tomcat/tomcat.service.j2 - the single
+   canonical copy, rendered directly by
+   ansible/roles/middleware-tomcat/tasks/{install,instrument}.yml (no
+   separate mirror lives under ansible/roles/ anymore). One template
+   for both the bare (install.yml) and OTel-instrumented
+   (instrument.yml) unit - instrument.yml re-templates this with
+   otel_instrumented: true and restarts, rather than keeping two
+   near-duplicate unit files. Mirrors
+   examples/tomcat-demo-app/{setup,instrument}-tomcat.sh's two systemd
+   heredocs.
+
+   Jinja2 variables needed when otel_instrumented is true (passed as
+   `-e` on the deploy-instrumentations:4711-mitarbeiterverzeichnis CI
+   job): pyroscope_internal_ip, tenant_id,
+   service_name, service_namespace, deployment_environment, app_owner,
+   app_cost_center, app_size_class - see
+   instrumentation/middleware/tomcat/collector-config.yaml's own
+   header for what each one is (the same values apply to both files -
+   this is the Java agent's own traces/metrics, that one is Tomcat's
+   log files, both need to agree on service identity). pyroscope_internal_ip
+   is the one exception - continuous profiling pushes to the Pyroscope
+   ingest proxy, not through the gateway (see B12 in the main README), so
+   it's not shared with collector-config.yaml.
+   F03: the Java agent exports to the local otelcol-tomcat
+   (127.0.0.1:4317), which forwards over mTLS with this tenant's
+   certificate - no tenant_id header. Pyroscope's Basic-Auth credentials
+   come from /etc/tomcat/pyroscope-ingest.env (root-only, read by systemd
+   before dropping to the tomcat user), not from this world-readable
+   unit file. #}
+[Unit]
+Description=Apache Tomcat{% if otel_instrumented %} (OTel-instrumented){% endif %}
+
+After=network.target
+
+[Service]
+Type=forking
+User=tomcat
+Group=tomcat
+
+Environment=JAVA_HOME=/usr/lib/jvm/jre-17
+Environment=CATALINA_PID=/opt/tomcat/temp/tomcat.pid
+Environment=CATALINA_HOME=/opt/tomcat
+Environment=CATALINA_BASE=/opt/tomcat
+{% if otel_instrumented %}
+# Every value below is double-quoted ("KEY=value") - systemd's
+# Environment= directive splits on unquoted whitespace into multiple
+# separate assignments, silently dropping anything after the first
+# space that isn't itself a "NAME=..." token. Found live: CATALINA_OPTS'
+# second -javaagent: flag (added for Pyroscope, see B12 in the main
+# README) has no "=" in it, so it was silently dropped entirely - the
+# Pyroscope agent was never actually attached to the running JVM
+# despite the jar being downloaded and the unit file looking correct
+# on disk (`cat` shows the unrendered/unparsed text; only `systemctl
+# show -p Environment` shows what systemd actually parsed). The same
+# unquoted-space bug already affected OTEL_RESOURCE_ATTRIBUTES
+# (app_owner values like "Web App Team" contain spaces) before this
+# session ever touched this file - silently truncating it at the first
+# space, dropping app.cost_center/app.size_class entirely, undetected
+# until this same investigation surfaced it.
+Environment="CATALINA_OPTS=-javaagent:/opt/tomcat/otel-javaagent.jar -javaagent:/opt/tomcat/pyroscope-javaagent.jar"
+Environment="OTEL_SERVICE_NAME={{ service_name }}"
+Environment="OTEL_RESOURCE_ATTRIBUTES=service.namespace={{ service_namespace }},deployment.environment={{ deployment_environment }},app.owner={{ app_owner }},app.cost_center={{ app_cost_center }},app.size_class={{ app_size_class }}"
+Environment="OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317"
+Environment="OTEL_EXPORTER_OTLP_PROTOCOL=grpc"
+Environment="OTEL_TRACES_EXPORTER=otlp"
+Environment="OTEL_METRICS_EXPORTER=otlp"
+Environment="OTEL_LOGS_EXPORTER=otlp"
+Environment="OTEL_INSTRUMENTATION_JAVA_UTIL_LOGGING_ENABLED=true"
+Environment="PYROSCOPE_APPLICATION_NAME={{ service_name }}"
+Environment="PYROSCOPE_SERVER_ADDRESS=http://{{ pyroscope_internal_ip }}:4040"
+EnvironmentFile=/etc/tomcat/pyroscope-ingest.env
+{% endif %}
+
+ExecStart=/opt/tomcat/bin/startup.sh
+ExecStop=/opt/tomcat/bin/shutdown.sh
+
+RestartSec=10
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

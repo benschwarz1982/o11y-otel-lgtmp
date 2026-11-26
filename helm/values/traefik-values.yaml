@@ -1,0 +1,77 @@
+---
+# Helm values for Traefik. Traefik is the cluster's actual internet-facing
+# edge (its own Service is a public LoadBalancer, no other reverse proxy
+# sits in front of it).
+#
+# No forwardedHeaders.insecure / trustedIPs on any entrypoint (F06): with
+# nothing trusted upstream, Traefik drops X-Forwarded-*/X-Real-Ip sent by
+# a client and sets them itself from the connection's real source IP.
+# An earlier version had insecure: true, believing it made Traefik
+# overwrite these headers - it does the opposite and passes whatever the
+# client sent straight through. Found live: a request with a forged
+# X-Real-Ip reached Grafana, which logged the forged value as the
+# client's address (and keys its login brute-force protection on it).
+# That setting was added for a proxy_attribution_required 403 from
+# OpenClaw, most likely caused by kube-proxy SNAT (fixed separately by
+# externalTrafficPolicy: Local below). If OpenClaw ever answers that 403
+# again, trust a specific upstream via trustedIPs - never insecure.
+ports:
+  # NFR-04 mTLS rollout, Phase 3 (README "Open Points") - a dedicated
+  # TCP entrypoint for OTLP ingestion, routed per-tenant by SNI
+  # (IngressRouteTCP/TLSOption CRDs, terraform/environments/tenants/
+  # main.tf). expose.default: false keeps it OUT of Traefik's own
+  # chart-managed Service (the public one web/websecure use) -
+  # otel_gateway_traefik_internal (terraform/environments/
+  # observability-stack/main.tf) exposes it separately as its own
+  # internal-only LoadBalancer, mirroring otel_gateway_internal's own
+  # existing pattern. This keeps OTLP ingestion staying an
+  # internal-VNet-only concern, same as it always has been - it does
+  # NOT start routing through Traefik's public, internet-facing
+  # entrypoint just because it now shares the same Traefik Deployment.
+  otlpmtls:
+    port: 14317
+    expose:
+      default: false
+    protocol: TCP
+
+# Without this, "actually-observed client IP" above is still wrong: the
+# default externalTrafficPolicy (Cluster) lets kube-proxy SNAT
+# cross-node LoadBalancer traffic, replacing the real external client IP
+# with whichever AKS node happened to receive it before forwarding on to
+# Traefik's pod - found live via a temporary echo-server swapped in for
+# openclaw's own Service: X-Forwarded-For arrived as 10.0.1.33 (an AKS
+# node's own internal IP, itself inside OpenClaw's trustedProxies
+# 10.0.0.0/16 range), which is exactly what OpenClaw's
+# proxy_attribution_required check flags as suspicious - a genuine
+# client's IP should never itself look like another trusted proxy. Local
+# preserves the real source IP end-to-end (standard fix for this exact
+# LoadBalancer-Service class of problem), at the cost of only routing to
+# nodes that actually run a Traefik pod - fine here, this cluster's own
+# LoadBalancer health probes already handle that correctly.
+service:
+  spec:
+    externalTrafficPolicy: Local
+
+# Found live: even with externalTrafficPolicy: Local above, a direct
+# in-cluster pod-to-pod call (e.g. Grafana calling OpenClaw's webhook
+# without going through Traefik at all) still hits
+# gateway.trustedProxies' underlying problem - Azure CNI hands out node
+# and pod IPs from the same flat subnet, so any CIDR broad enough to
+# recognize Traefik as a trusted proxy also matches ordinary pods.
+# hostNetwork puts Traefik's pod directly in the node's own network
+# namespace, so its source IP becomes that node's IP - the one
+# identity in this cluster that's genuinely disjoint from every
+# regular (non-hostNetwork) pod's IP, letting OpenClaw's
+# trustedProxies be scoped to just the node IPs
+# (terraform/environments/aiops/main.tf, data.kubernetes_nodes.all)
+# instead of the whole VNet CIDR. dnsPolicy must change alongside
+# hostNetwork - a hostNetwork pod no longer gets the cluster's DNS
+# resolv.conf by default. hostNetwork is a genuine top-level values
+# key in this chart, but dnsPolicy is NOT - found live, a real
+# `terraform apply` (this had only ever been live-patched via kubectl
+# until now) failed the chart's own values-schema validation with
+# "additional properties 'dnsPolicy' not allowed" at the top level;
+# the chart only exposes it nested under `deployment`.
+hostNetwork: true
+deployment:
+  dnsPolicy: ClusterFirstWithHostNet

@@ -1,0 +1,42 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform variable files can contain secrets - commit *.tfvars.example instead
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# local-exec output containing the cert-manager Service Principal secret
+# (terraform/modules/cert-manager) - never commit
+.sp-output.json
+
+# terraform/environments/observability-stack materializes a kubeconfig
+# from its own AKS data source for one local-exec step - never commit
+.terraform-kubeconfig
+
+# Ansible
+*.retry
+.vault_pass*
+# Generated per CI run (IP/credentials fetched fresh from Terraform
+# state each time) - see ansible/playbooks/onboard-platform.yml
+ansible/inventory/generated.ini
+ansible/*.pem
+
+# OS / Editor
+.DS_Store
+*.swp
+
+# Python (scripts/, ruff/validate:python)
+__pycache__/
+.ruff_cache/
+
+# Local provider cache used by validate:terraform (.gitlab-ci.yml)
+.terraform-plugin-cache/

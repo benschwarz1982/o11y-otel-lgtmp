@@ -1,0 +1,13 @@
+# USER.md - Operator Profile
+
+## Primary Operator
+- **Name:** ${openclaw_operator_name}
+- **Organisation:** ${openclaw_organisation_name}
+- **Language:** English (primary), German (preferred for communication)
+- **Timezone:** Europe/Zurich
+
+## Communication Preferences
+- Always reply in English, but prefer German for communication when possible
+- Short and precise – no unnecessary explanations
+- For errors: state the error and the solution directly
+- For successful remediation: short summary with before/after values

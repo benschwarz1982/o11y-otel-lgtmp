@@ -1,0 +1,167 @@
+---
+# OTLP mTLS client certificate lifecycle on a Linux VM (F11) plus the CA
+# that verifies the Gateway's server certificate (F08). Shared by
+# platform-linux (platform tenant) and middleware-tomcat (application
+# tenant) - each passes its own tenant and directory.
+#
+# Bring-your-own-CSR: the private key is generated on the VM and never
+# leaves it; only the CSR goes to cert-manager, signed by this tenant's
+# own Issuer (otlp-issuer-<tenant_id>, the CA the Gateway's per-tenant
+# receiver trusts). (Re)issued whenever the certificate is missing,
+# expires within otlp_client_cert_renew_before_seconds, or doesn't match the
+# key (e.g. an earlier run was interrupted after generating a new key).
+
+- name: Ensure the OTLP TLS directory exists
+  ansible.builtin.file:
+    path: "{{ otlp_client_cert_dir }}"
+    state: directory
+    owner: root
+    group: "{{ otlp_client_cert_group }}"
+    mode: "0750"
+
+- name: Check the current OTLP client certificate
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      crt="{{ otlp_client_cert_dir }}/client.crt"; key="{{ otlp_client_cert_dir }}/client.key"
+      [ -s "$crt" ] && [ -s "$key" ] || { echo missing; exit 0; }
+      openssl x509 -in "$crt" -noout -checkend {{ otlp_client_cert_renew_before_seconds }} >/dev/null || { echo expiring; exit 0; }
+      a=$(openssl x509 -in "$crt" -noout -pubkey | sha256sum)
+      b=$(openssl pkey -in "$key" -pubout | sha256sum)
+      [ "$a" = "$b" ] && echo valid || echo mismatch
+    executable: /bin/bash
+  register: otlp_client_cert_state
+  changed_when: false
+
+- name: Decide whether to (re)issue the OTLP client certificate
+  ansible.builtin.set_fact:
+    otlp_client_cert_issue: "{{ otlp_client_cert_state.stdout | trim != 'valid' }}"
+
+- name: Report the certificate state
+  ansible.builtin.debug:
+    msg: "OTLP client certificate for {{ otlp_client_cert_tenant_id }}: {{ otlp_client_cert_state.stdout | trim }}"
+
+# The new key and certificate are staged as *.new and only replace the
+# working pair once signing succeeded and they match - a failed renewal
+# leaves the collector's current (still valid) credentials untouched.
+- name: Generate a new private key + CSR on the VM
+  ansible.builtin.command:
+    cmd: >
+      openssl req -new -newkey rsa:2048 -nodes
+      -keyout {{ otlp_client_cert_dir }}/client.key.new
+      -out /tmp/otlp-client-{{ otlp_client_cert_tenant_id }}.csr
+      -subj "/CN={{ otlp_client_cert_tenant_id }}"
+  changed_when: true
+  when: otlp_client_cert_issue | bool
+
+- name: Fetch the CSR back to the controller
+  ansible.builtin.fetch:
+    src: "/tmp/otlp-client-{{ otlp_client_cert_tenant_id }}.csr"
+    dest: "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.csr"
+    flat: true
+  when: otlp_client_cert_issue | bool
+
+- name: Sign the CSR via cert-manager (tenant Issuer)
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      kubectl delete certificaterequest otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability --ignore-not-found=true
+      cat <<EOF2 | kubectl apply -f -
+      apiVersion: cert-manager.io/v1
+      kind: CertificateRequest
+      metadata:
+        name: otlp-vm-csr-{{ otlp_client_cert_tenant_id }}
+        namespace: observability
+      spec:
+        issuerRef:
+          name: otlp-issuer-{{ otlp_client_cert_tenant_id }}
+          kind: Issuer
+        duration: {{ otlp_client_cert_duration }}
+        request: {{ lookup('file', '/tmp/otlp-mtls-' + otlp_client_cert_tenant_id + '.csr') | b64encode }}
+        usages:
+          - client auth
+      EOF2
+      kubectl wait --for=condition=Ready certificaterequest/otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability --timeout=60s
+      kubectl get certificaterequest otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability -o jsonpath='{.status.certificate}' | base64 -d > /tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.crt
+      kubectl delete certificaterequest otlp-vm-csr-{{ otlp_client_cert_tenant_id }} -n observability --ignore-not-found=true
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  when: otlp_client_cert_issue | bool
+
+- name: Copy the signed client certificate onto the VM
+  ansible.builtin.copy:
+    src: "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.crt"
+    dest: "{{ otlp_client_cert_dir }}/client.crt.new"
+    owner: root
+    group: "{{ otlp_client_cert_group }}"
+    mode: "0644"
+  when: otlp_client_cert_issue | bool
+
+- name: Install the new key + certificate once they match
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      d="{{ otlp_client_cert_dir }}"
+      a=$(openssl x509 -in "$d/client.crt.new" -noout -pubkey | sha256sum)
+      b=$(openssl pkey -in "$d/client.key.new" -pubout | sha256sum)
+      [ "$a" = "$b" ] || { echo "signed certificate does not match the new key"; exit 1; }
+      mv -f "$d/client.key.new" "$d/client.key"
+      mv -f "$d/client.crt.new" "$d/client.crt"
+    executable: /bin/bash
+  changed_when: true
+  when: otlp_client_cert_issue | bool
+
+# openssl writes the key as root 0600 - the collector runs as its own
+# service user and must be able to read it.
+- name: Let the collector's service user read the private key
+  ansible.builtin.file:
+    path: "{{ otlp_client_cert_dir }}/client.key"
+    owner: root
+    group: "{{ otlp_client_cert_group }}"
+    mode: "0640"
+
+- name: Remove the CSR from the VM
+  ansible.builtin.file:
+    path: "/tmp/otlp-client-{{ otlp_client_cert_tenant_id }}.csr"
+    state: absent
+
+- name: Remove the CSR/certificate copies from the controller
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.csr"
+    - "/tmp/otlp-mtls-{{ otlp_client_cert_tenant_id }}.crt"
+  delegate_to: localhost
+  become: false
+
+# F08: the internal root CA (cert-manager ClusterIssuer internal-ca) that
+# signed the Gateway's server certificate (dnsNames include
+# *.otlp.internal, the SNI the collectors send) - the collectors verify
+# the server against it instead of insecure_skip_verify.
+- name: Read the internal root CA from the cluster
+  ansible.builtin.command:
+    # argv, not cmd: the command module's shlex splitting would drop the
+    # backslash in ca\.crt and the jsonpath would silently return nothing.
+    argv: [kubectl, get, secret, otel-gateway-server-cert, -n, observability, -o, 'jsonpath={.data.ca\.crt}']
+  delegate_to: localhost
+  become: false
+  register: otlp_client_cert_ca_b64
+  changed_when: false
+  failed_when: >-
+    otlp_client_cert_ca_b64.rc != 0 or
+    (otlp_client_cert_ca_b64.stdout | b64decode) is not search('-----BEGIN CERTIFICATE-----')
+
+- name: Install the internal root CA for server verification
+  ansible.builtin.copy:
+    content: "{{ otlp_client_cert_ca_b64.stdout | b64decode }}"
+    dest: "{{ otlp_client_cert_dir }}/ca.crt"
+    owner: root
+    group: "{{ otlp_client_cert_group }}"
+    mode: "0644"
+  register: otlp_client_cert_ca_file
+
+- name: Report whether the collector needs a restart
+  ansible.builtin.set_fact:
+    otlp_client_cert_changed: "{{ (otlp_client_cert_issue | bool) or otlp_client_cert_ca_file.changed }}"

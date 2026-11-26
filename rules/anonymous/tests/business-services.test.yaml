@@ -1,0 +1,31 @@
+---
+# promtool test rules (run by scripts/test-rules.py on a copy without
+# Mimir's source_tenants). G08: a business service shows the worst state
+# of its systems; a member without a status series makes it "unknown"
+# (2), even while the other members report "functional".
+rule_files:
+  - ../business-services.yaml
+evaluation_interval: 1m
+tests:
+  - name: Kundenservice = worst member, missing member = unknown
+    interval: 1m
+    input_series:
+      - series: 'system:status:code{system_id="4721", env="prod", tenant="4721-prod", system_name="Kundenverwaltung"}'
+        values: '0x30'
+      - series: 'system:status:code{system_id="4087", env="prod", tenant="4087-prod", system_name="Container-Plattform"}'
+        values: '0x30'
+      - series: 'system:status:code{system_id="4711", env="prod", tenant="4711-prod", system_name="Identity"}'
+        values: '_x10 3x10 0x10'
+    promql_expr_test:
+      # 4711 missing, the other two functional -> unknown
+      - expr: business_service:status:code{service="Kundenservice"}
+        eval_time: 5m
+        exp_samples: [{labels: 'business_service:status:code{service="Kundenservice"}', value: 2}]
+      # 4711 disrupted -> disrupted
+      - expr: business_service:status:code{service="Kundenservice"}
+        eval_time: 15m
+        exp_samples: [{labels: 'business_service:status:code{service="Kundenservice"}', value: 3}]
+      # all functional
+      - expr: business_service:status:code{service="Kundenservice"}
+        eval_time: 25m
+        exp_samples: [{labels: 'business_service:status:code{service="Kundenservice"}', value: 0}]

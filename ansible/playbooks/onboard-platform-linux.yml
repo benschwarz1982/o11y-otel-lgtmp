@@ -1,0 +1,31 @@
+---
+# Platform-basis tier, Linux only (IaC Roadmap milestone, first pass) -
+# run by the instrumentation-1286-linux-basis CI job against a one-host,
+# freshly-generated inventory (see ansible/inventory/generated.ini - not
+# committed, written per run). Connection vars
+# (ansible_user/ansible_ssh_private_key_file) live in that generated
+# inventory, not here - see ansible/README.md.
+#
+# A separate playbook from onboard-platform-windows.yml, not one
+# playbook with --limit: found live that Ansible parses/resolves module
+# references for every play in a playbook file up front, regardless of
+# --limit, so a single combined file would require the
+# instrumentation-1286-linux-basis job to also install the
+# ansible.windows collection just to satisfy the other play's module
+# references - this way each job's dependencies stay genuinely
+# independent.
+
+- name: Configure platform-basis Linux hosts
+  hosts: platform_linux
+  gather_facts: false
+  # rocky (the connecting SSH user) needs root for package install/
+  # systemd/journal-group changes - implicit before via
+  # `az vm run-command` (always runs as root), not over plain SSH.
+  # Found live: "SQLite error on /var/lib/dnf/history.sqlite... attempt
+  # to write a readonly database" without this. Passwordless sudo for
+  # the initial admin user is standard on Azure Linux VM images
+  # (cloud-init), so no extra become_password should be needed - not
+  # yet confirmed live.
+  become: true
+  roles:
+    - platform-linux

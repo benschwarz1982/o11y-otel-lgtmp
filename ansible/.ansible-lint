@@ -1,0 +1,17 @@
+---
+# CI baseline (validate:ansible job in .gitlab-ci.yml) - "basic" profile
+# with two rules relaxed for reasons specific to this repo, rather than
+# dropping the whole profile a notch.
+profile: basic
+
+skip_list:
+  # Role names use hyphens (platform-linux, middleware-tomcat, ...) - an
+  # established, already-live-tested convention throughout this repo.
+  # Renaming to satisfy ansible-lint's underscore-only pattern would
+  # touch CI job scripts, ansible.cfg's roles_path, playbooks, and
+  # README docs for zero functional benefit.
+  - role-name
+  # Same as validate:yaml's own yamllint invocation (line-length
+  # disabled there) - a couple of collector-download URLs exceed the
+  # default max and can't be shortened meaningfully.
+  - yaml[line-length]

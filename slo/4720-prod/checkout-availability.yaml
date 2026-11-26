@@ -1,0 +1,42 @@
+---
+# G03 (FR-10): OpenSLO v1 source - see slo/4721-prod/ for the pipeline.
+# SLI: share of server spans of the shop's checkout service that did not
+# end in an error (Tempo span metrics, tenant 4720-prod).
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: checkout-availability
+  displayName: Astronomy Shop - Checkout erfolgreich
+spec:
+  service: checkout
+  description: >-
+    99% of checkout requests succeed over 30 days. The demo injects
+    payment failures via feature flags (UC3), which burn this budget on
+    purpose.
+  budgetingMethod: Occurrences
+  timeWindow:
+    - duration: 30d
+      isRolling: true
+  objectives:
+    - displayName: 99% successful
+      target: 0.99
+  indicator:
+    metadata:
+      name: checkout-server-span-success
+    spec:
+      ratioMetric:
+        counter: true
+        good:
+          metricSource:
+            type: Prometheus
+            spec:
+              # "or 0 * total": with only error spans the good series is
+              # absent - without this the SLI would vanish instead of
+              # dropping to 0% during a total outage.
+              query: sum(rate(traces_spanmetrics_calls_total{service="checkout", span_kind="SPAN_KIND_SERVER", status_code!="STATUS_CODE_ERROR"}[{{.window}}]))
+                or 0 * sum(rate(traces_spanmetrics_calls_total{service="checkout", span_kind="SPAN_KIND_SERVER"}[{{.window}}]))
+        total:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: sum(rate(traces_spanmetrics_calls_total{service="checkout", span_kind="SPAN_KIND_SERVER"}[{{.window}}]))

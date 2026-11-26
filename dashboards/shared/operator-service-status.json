@@ -1,0 +1,232 @@
+{
+  "title": "Operator: Service Status",
+  "uid": "operator-service-status",
+  "description": "G08 (FR-08): status of business services (services/business-services.yaml) and their systems, computed by the Mimir ruler (rules/<tenant>/status.yaml, rules/anonymous/business-services.yaml). Funktionsf\u00e4hig = telemetry present, no SLO burning; Eingeschr\u00e4nkt = slow SLO burn; Unbekannt = no telemetry for 10 minutes; Gest\u00f6rt = fast SLO burn. A service shows the worst state of its systems (unknown ranks above degraded).",
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "rgba(255, 96, 96, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "tags": [
+    "operator",
+    "status"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Business services",
+      "datasource": "Mimir-anonymous",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "business_service:status:code",
+          "legendFormat": "{{service}}",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Funktionsf\u00e4hig",
+                  "color": "green",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Eingeschr\u00e4nkt",
+                  "color": "yellow",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Unbekannt",
+                  "color": "text",
+                  "index": 2
+                },
+                "3": {
+                  "text": "Gest\u00f6rt",
+                  "color": "red",
+                  "index": 3
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "fixed"
+          },
+          "noValue": "Unbekannt"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "state-timeline",
+      "title": "Business services over time",
+      "datasource": "Mimir-anonymous",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "business_service:status:code",
+          "legendFormat": "{{service}}",
+          "instant": false,
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Funktionsf\u00e4hig",
+                  "color": "green",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Eingeschr\u00e4nkt",
+                  "color": "yellow",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Unbekannt",
+                  "color": "text",
+                  "index": 2
+                },
+                "3": {
+                  "text": "Gest\u00f6rt",
+                  "color": "red",
+                  "index": 3
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "fixed"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "state-timeline",
+      "title": "Systems over time",
+      "datasource": "Mimir-anonymous",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "operator:system_status:code",
+          "legendFormat": "{{system_id}} {{system_name}} ({{env}})",
+          "instant": false,
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Funktionsf\u00e4hig",
+                  "color": "green",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Eingeschr\u00e4nkt",
+                  "color": "yellow",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Unbekannt",
+                  "color": "text",
+                  "index": 2
+                },
+                "3": {
+                  "text": "Gest\u00f6rt",
+                  "color": "red",
+                  "index": 3
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "fixed"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

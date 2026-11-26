@@ -1,0 +1,20 @@
+---
+# Same OTel Collector version pinned everywhere else in this repo
+# (collector-gateway/otel-gateway-collector.yaml's/instrumentation/
+# platforms/4087-container-platform/config.yaml's image tag) - keep in
+# sync.
+otel_collector_version: "0.166.0"
+
+# Pinned here directly - roles/middleware-tomcat/ is the single
+# canonical implementation, no separate shell-script reference to keep
+# these in sync with anymore (see README.md's Known Pitfalls).
+tomcat_version: "11.0.29"
+tomcat_major_version: "11"
+otel_java_agent_version: "2.34.0"
+
+# Continuous profiling (Pyroscope) - see B12 in the main README.
+# VERIFY on first real deploy: pyroscope_dotnet_version's release-asset
+# naming (github.com/grafana/pyroscope-dotnet/releases) drifts fast,
+# confirm the current tag before relying on this pin.
+pyroscope_java_agent_version: "2.9.2"
+pyroscope_dotnet_version: "1.6.1"

@@ -1,0 +1,16 @@
+---
+# Expected calendar values (rules/4721-prod/baseline.yaml, group
+# "calendar") at real dates - checked by scripts/test-rules.py, which
+# evaluates the recording rules' formulas at each timestamp (promtool
+# unit tests always start at the Unix epoch).
+cases:
+  - {at: "2026-07-15T10:00:00Z", dst: 1, local_hour: 12, local_day_of_week: 3, business_hours: 1, maintenance_window: 0}
+  - {at: "2026-01-11T01:30:00Z", dst: 0, local_hour: 2, local_day_of_week: 0, business_hours: 0, maintenance_window: 1}
+  - {at: "2026-03-29T12:00:00Z", dst: 1}   # last Sunday of March: DST starts
+  - {at: "2026-03-22T12:00:00Z", dst: 0}
+  - {at: "2026-10-24T12:00:00Z", dst: 1}
+  - {at: "2026-10-25T12:00:00Z", dst: 0}   # last Sunday of October: DST ends
+  - {at: "2026-11-20T23:30:00Z", dst: 0, local_hour: 0, local_day_of_week: 6, business_hours: 0}  # Friday UTC, Saturday local
+  - {at: "2026-11-18T05:59:00Z", local_hour: 6, business_hours: 0}
+  - {at: "2026-11-18T06:00:00Z", local_hour: 7, business_hours: 1}
+  - {at: "2026-11-18T18:00:00Z", local_hour: 19, business_hours: 0}

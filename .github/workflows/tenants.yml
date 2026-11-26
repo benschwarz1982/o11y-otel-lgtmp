@@ -1,0 +1,100 @@
+---
+name: Tenants
+
+# Every merge to main that changes tenant configuration (manifests and
+# the files scripts/provision.py generates from them, rules/SLOs,
+# datasources, dashboards, TLS certs) is rolled out automatically - the
+# GitLab pipeline's tenants:apply + tenants:rollout. Changes to the
+# tenants Terraform code itself, alerting or the rule sync script roll
+# out by starting this workflow by hand (they were manual in GitLab too).
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+    paths:
+      - manifests/**
+      - helm/values/*-tenant-overrides.yaml
+      - helm/values/ingestion-daily-budgets.yaml
+      - collector-gateway/otel-gateway-collector.yaml
+      - instrumentation/platforms/4087-container-platform/config.yaml
+      - rules/**
+      - slo/**
+      - services/**
+      - datasources/**
+      - dashboards/**
+      - tls-certs/**
+  workflow_dispatch:
+
+permissions: {}
+
+# Whole runs are serialized, so the run left waiting is always the one
+# for the newest push (a newer run replaces an older pending one).
+# Together with the guard in ci/scripts/tenants-rollout.sh an older main
+# never overwrites a newer one.
+concurrency:
+  group: tenants-rollout
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify generated files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit_order: ${{ steps.order.outputs.commit_order }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.15"
+      - run: |
+          pip install --quiet -r ci/requirements/onboarding.txt
+          python3 scripts/provisioning_sync.py --check
+      # Newest-wins guard of the rollout (see ci/scripts/tenants-rollout.sh)
+      - id: order
+        run: echo "commit_order=$(git rev-list --count --first-parent HEAD)" | tee -a "$GITHUB_OUTPUT"
+
+  rollout:
+    name: Roll out
+    needs: verify
+    runs-on: [self-hosted, linux, otel-demo]
+    environment: demo
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    container:
+      image: ${{ vars.CI_IMAGE_PREFIX || format('ghcr.io/{0}/ci-tools', github.repository) }}/terraform:v1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      AZURE_RESOURCE_GROUP: rg-bensc-001
+      AKS_CLUSTER_NAME: aks-otel-demo
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_AZUREAD: "true"
+      TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+      TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+      TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "0"
+      TF_VAR_openclaw_gateway_token: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+      PROVISIONED_SHA: ${{ github.sha }}
+      PROVISIONED_ORDER: ${{ needs.verify.outputs.commit_order }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/azure-setup
+        with:
+          kubeconfig: "true"
+      - run: ci/scripts/tenants-rollout.sh
+      - name: Clean up workspace
+        if: always()
+        run: ci/scripts/cleanup.sh

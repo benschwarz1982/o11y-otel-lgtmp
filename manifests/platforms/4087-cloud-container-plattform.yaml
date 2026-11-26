@@ -1,0 +1,13 @@
+---
+system_id: '4087'
+type: platform
+name: Cloud Container Plattform
+owner:
+  team: Platform Engineering
+  contact: platform-team@example.com
+cost_center: CC-4087
+environments:
+  - env: prod
+    size: L
+dashboard_template: platforms/platform-container.template.json
+demo_narrative: "Part of UC3: Kubernetes Microservices (see the main README's Demo Use Cases) - see also [4720-OTel Astronomy Shop Demo](/d/system-4720)."

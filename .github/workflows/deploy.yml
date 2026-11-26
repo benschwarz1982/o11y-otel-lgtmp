@@ -1,0 +1,307 @@
+---
+name: Deploy
+
+# Manual only: starting this workflow is the operator's decision (the
+# GitLab pipeline's manual deploy buttons). "everything" rebuilds the
+# whole demo from zero in dependency order:
+#   infra -> observability-stack -> tenants -> fleets (base tier -> apps)
+#   -> instrumentations (base tier -> apps) -> aiops
+# Any single step can be (re)run on its own; `systems` narrows the fleet
+# and instrumentation steps.
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: What to deploy
+        type: choice
+        default: everything
+        options:
+          - everything
+          - infra
+          - observability-stack
+          - tenants
+          - fleets
+          - instrumentations
+          - aiops
+      systems:
+        description: 'Systems for fleets/instrumentations: "all" or IDs, e.g. "1286,4711"'
+        type: string
+        default: all
+      plan_only:
+        description: Terraform plan only (infra, observability-stack, aiops)
+        type: boolean
+        default: false
+
+permissions: {}
+
+# One deploy/destroy at a time against the demo environment.
+concurrency:
+  group: demo-environment
+  cancel-in-progress: false
+
+env:
+  AZURE_RESOURCE_GROUP: rg-bensc-001
+  AKS_CLUSTER_NAME: aks-otel-demo
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC: "true"
+  ARM_USE_AZUREAD: "true"
+  TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+  TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+  TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+
+jobs:
+  setup:
+    name: Plan the run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      infra: ${{ steps.scope.outputs.infra }}
+      stack: ${{ steps.scope.outputs.stack }}
+      tenants: ${{ steps.scope.outputs.tenants }}
+      aiops: ${{ steps.scope.outputs.aiops }}
+      fleets_platform: ${{ steps.fleets.outputs.platform }}
+      fleets_apps: ${{ steps.fleets.outputs.apps }}
+      instr_platform: ${{ steps.instr.outputs.platform }}
+      instr_apps: ${{ steps.instr.outputs.apps }}
+      commit_order: ${{ steps.order.outputs.commit_order }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Newest-wins guard of the tenants rollout: position of this commit
+      # in main's first-parent history (the CI images have no git).
+      - id: order
+        run: echo "commit_order=$(git rev-list --count --first-parent HEAD)" | tee -a "$GITHUB_OUTPUT"
+      - id: scope
+        env:
+          SCOPE: ${{ inputs.scope }}
+          PLAN_ONLY: ${{ inputs.plan_only }}
+        run: |
+          case "${SCOPE}:${PLAN_ONLY}" in
+            everything:true|tenants:true|fleets:true|instrumentations:true)
+              echo "::error::plan_only works for infra, observability-stack and aiops only"; exit 1 ;;
+          esac
+          on() { [ "${SCOPE}" = everything ] || [ "${SCOPE}" = "$1" ] && echo true || echo false; }
+          {
+            echo "infra=$(on infra)"
+            echo "stack=$(on observability-stack)"
+            echo "tenants=$(on tenants)"
+            echo "aiops=$(on aiops)"
+          } | tee -a "$GITHUB_OUTPUT"
+      # Like the Tenants workflow (GitLab tenants:apply): only roll out a
+      # revision whose generated files match its manifests.
+      - if: steps.scope.outputs.tenants == 'true'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.15"
+      - if: steps.scope.outputs.tenants == 'true'
+        run: |
+          pip install --quiet -r ci/requirements/onboarding.txt
+          python3 scripts/provisioning_sync.py --check
+      - id: fleets
+        env:
+          SCOPE: ${{ inputs.scope }}
+          SYSTEMS: ${{ inputs.systems }}
+        run: |
+          if [ "${SCOPE}" = everything ] || [ "${SCOPE}" = fleets ]; then
+            ci/scripts/select-systems.sh provision "${SYSTEMS}"
+          else
+            echo "platform=[]" >> "$GITHUB_OUTPUT"; echo "apps=[]" >> "$GITHUB_OUTPUT"
+          fi
+      - id: instr
+        env:
+          SCOPE: ${{ inputs.scope }}
+          SYSTEMS: ${{ inputs.systems }}
+        run: |
+          if [ "${SCOPE}" = everything ] || [ "${SCOPE}" = instrumentations ]; then
+            ci/scripts/select-systems.sh instrument "${SYSTEMS}"
+          else
+            echo "platform=[]" >> "$GITHUB_OUTPUT"; echo "apps=[]" >> "$GITHUB_OUTPUT"
+          fi
+
+  infra:
+    name: Infra (AKS + network)
+    needs: setup
+    if: needs.setup.outputs.infra == 'true'
+    runs-on: &runner [self-hosted, linux, otel-demo]
+    environment: &environment demo
+    permissions: &permissions
+      contents: read
+      id-token: write
+      packages: read
+    container: &terraform-container
+      image: ${{ vars.CI_IMAGE_PREFIX || format('ghcr.io/{0}/ci-tools', github.repository) }}/terraform:v1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/azure-setup
+      - run: ci/scripts/platform.sh infra "${{ inputs.plan_only && 'plan' || 'apply' }}"
+      - &cleanup
+        name: Clean up workspace
+        if: always()
+        run: ci/scripts/cleanup.sh
+
+  observability-stack:
+    name: Observability stack
+    needs: [setup, infra]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.stack == 'true' }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *terraform-container
+    env:
+      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID }}
+      TF_VAR_cert_manager_client_secret: ${{ secrets.CERT_MANAGER_CLIENT_SECRET }}
+      TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+      TF_VAR_openclaw_hooks_token: ${{ secrets.OPENCLAW_HOOKS_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+        with:
+          kubeconfig: "true"
+      - run: ci/scripts/platform.sh observability-stack "${{ inputs.plan_only && 'plan' || 'apply' }}"
+      - *cleanup
+
+  tenants:
+    name: Tenants rollout
+    needs: [setup, observability-stack]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.tenants == 'true' }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *terraform-container
+    env:
+      TF_VAR_openclaw_gateway_token: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+      PROVISIONED_SHA: ${{ github.sha }}
+      PROVISIONED_ORDER: ${{ needs.setup.outputs.commit_order }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+        with:
+          kubeconfig: "true"
+      - run: ci/scripts/tenants-rollout.sh
+      - *cleanup
+
+  fleets-platform:
+    name: Fleet ${{ matrix.system }}
+    needs: [setup, tenants]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.fleets_platform != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.fleets_platform) }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: &matrix-container
+      image: ${{ vars.CI_IMAGE_PREFIX || format('ghcr.io/{0}/ci-tools', github.repository) }}/${{ matrix.image }}:v1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+        with:
+          # Terraform-only systems need no kubectl (as in GitLab)
+          kubeconfig: ${{ matrix.image != 'terraform' }}
+      - run: ci/scripts/fleet.sh "${{ matrix.system }}" provision
+      - *cleanup
+
+  fleets-apps:
+    name: Fleet ${{ matrix.system }}
+    needs: [setup, fleets-platform]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.fleets_apps != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.fleets_apps) }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *matrix-container
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+        with:
+          # Terraform-only systems need no kubectl (as in GitLab)
+          kubeconfig: ${{ matrix.image != 'terraform' }}
+      - run: ci/scripts/fleet.sh "${{ matrix.system }}" provision
+      - *cleanup
+
+  instrument-platform:
+    name: Instrument ${{ matrix.system }}
+    needs: [setup, fleets-apps]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.instr_platform != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.instr_platform) }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *matrix-container
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+        with:
+          # Terraform-only systems need no kubectl (as in GitLab)
+          kubeconfig: ${{ matrix.image != 'terraform' }}
+      - run: ci/scripts/fleet.sh "${{ matrix.system }}" instrument
+      - *cleanup
+
+  instrument-apps:
+    name: Instrument ${{ matrix.system }}
+    needs: [setup, instrument-platform]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.instr_apps != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.instr_apps) }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *matrix-container
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+        with:
+          # Terraform-only systems need no kubectl (as in GitLab)
+          kubeconfig: ${{ matrix.image != 'terraform' }}
+      - run: ci/scripts/fleet.sh "${{ matrix.system }}" instrument
+      - *cleanup
+
+  aiops:
+    name: AIOps (OpenClaw)
+    needs: [setup, instrument-apps]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.aiops == 'true' }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *terraform-container
+    env:
+      TF_VAR_anthropic_setup_token: ${{ secrets.ANTHROPIC_SETUP_TOKEN }}
+      TF_VAR_openclaw_gateway_token: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+      TF_VAR_openclaw_hooks_token: ${{ secrets.OPENCLAW_HOOKS_TOKEN }}
+      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID }}
+      OPENCLAW_MODEL: ${{ vars.OPENCLAW_MODEL }}
+      AGENT_NAME: ${{ vars.AGENT_NAME }}
+      ORGANISATION_NAME: ${{ vars.ORGANISATION_NAME }}
+      OPERATOR_NAME: ${{ vars.OPERATOR_NAME }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+        with:
+          kubeconfig: "true"
+      - run: ci/scripts/platform.sh aiops "${{ inputs.plan_only && 'plan' || 'apply' }}"
+      - *cleanup

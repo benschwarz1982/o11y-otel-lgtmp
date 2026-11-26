@@ -1,0 +1,17 @@
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: astronomy-shop-ingress
+  namespace: astronomy-shop
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`astronomy-shop.sre.fs167.ch`)
+      kind: Rule
+      services:
+        - name: frontend-proxy
+          port: 8080
+  tls:
+    secretName: astronomy-shop-tls-secret

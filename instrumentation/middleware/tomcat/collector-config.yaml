@@ -1,0 +1,154 @@
+---
+# instrumentation/middleware/tomcat/collector-config.yaml
+#
+# A small, dedicated OTel Collector instance for this application: it
+# ships Tomcat's own log FILES (the Java agent - see ../java/ - only
+# covers what the JVM's own logging framework sees; catalina.out and the
+# access log are plain files Tomcat writes directly, invisible to the
+# agent) and relays the Java agent's own OTLP (traces/metrics/logs,
+# sent to 127.0.0.1:4317, see tomcat.service.j2) to the Gateway over
+# mTLS with this application's own tenant certificate (F03 - the tenant
+# is bound to the certificate, no client-chosen tenant_id). Runs as
+# its own systemd service, separate from whatever platform collector
+# (instrumentation/platforms/1286-linux-basis/config.yaml) already runs on the
+# same VM for host telemetry - keeps this middleware template fully
+# self-contained, the application/middleware owner never has to touch
+# the platform team's collector config to add this.
+#
+# This is the single canonical copy - Ansible's `template` module
+# renders it directly (see
+# ansible/roles/middleware-tomcat/tasks/instrument.yml), no separate
+# mirror lives under ansible/roles/ anymore. Jinja2 variables to
+# substitute at deploy time (passed as `-e` on the
+# `deploy-instrumentations:4711-mitarbeiterverzeichnis` CI job, or
+# supply your own for a different Tomcat app):
+#   {{ traefik_otlp_ip }}        - Traefik's internal OTLP mTLS LoadBalancer IP
+#   {{ tenant_id }}              - this application's own tenant, e.g.
+#                                 "4711-prod" (same one used in
+#                                 tomcat.service.j2/otel-java-agent.env.template -
+#                                 Tomcat's log files belong to the
+#                                 application, not a separate middleware
+#                                 tenant)
+#   {{ service_name }}           - must match the Java agent's own
+#                                 OTEL_SERVICE_NAME (tomcat.service.j2),
+#                                 so these logs correlate with the app's
+#                                 own traces/metrics under the same
+#                                 service identity
+#   {{ service_namespace }}      - must match the Java agent's own
+#                                 OTEL_RESOURCE_ATTRIBUTES service.namespace
+#   {{ deployment_environment }}/{{ app_owner }}/{{ app_cost_center }}/
+#   {{ app_size_class }}         - this schema's per-tenant attributes
+#                                 (schema/core.yaml), same values
+#                                 passed to tomcat.service.j2
+#
+# Installation: same otelcol-contrib binary as the platform collector,
+# registered as a second, independent systemd service (otelcol-tomcat)
+# so it can be started/stopped/upgraded independently of the
+# platform's own collector - see README.md in this directory.
+#
+# Needs read access to Tomcat's log directory:
+#   sudo usermod -aG tomcat <the user this service runs as>
+#   sudo chmod g+x /opt/tomcat   # was 700, blocks traversal by group members
+
+receivers:
+  # The Java agent's own OTLP export (tomcat.service.j2). Loopback only;
+  # the platform collector on this VM has no OTLP receiver, so 4317 is free.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+  filelog/tomcat:
+    include:
+      - /opt/tomcat/logs/catalina.out
+      - /opt/tomcat/logs/localhost_access_log.*.txt
+    start_at: end
+
+processors:
+  batch:
+    send_batch_size: 8192
+    timeout: 5s
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  # Unlike a platform collector's host-scoped resource processor, this
+  # sets the same service identity the Java agent uses - plain text log
+  # files have no resource attributes of their own, so it has to be set
+  # explicitly here to correlate with the app's own traces/metrics.
+  resource/tomcat-logs:
+    attributes:
+      - key: service.name
+        value: "{{ service_name }}"
+        action: upsert
+      - key: service.namespace
+        value: "{{ service_namespace }}"
+        action: upsert
+      - key: host.name
+        value: ${env:HOSTNAME}
+        action: upsert
+      # schema/core.yaml's Core Schema - per-tenant, same values as
+      # the Java agent's own OTEL_RESOURCE_ATTRIBUTES.
+      - key: deployment.environment
+        value: "{{ deployment_environment }}"
+        action: upsert
+      - key: app.owner
+        value: "{{ app_owner }}"
+        action: upsert
+      - key: app.cost_center
+        value: "{{ app_cost_center }}"
+        action: upsert
+      - key: app.size_class
+        value: "{{ app_size_class }}"
+        action: upsert
+
+exporters:
+  # Same mTLS path as the platform collector (instrumentation/platforms/
+  # 1286-linux-basis/config.yaml, otlp/host), but with this application's
+  # own tenant certificate (ansible/roles/otlp_client_cert): Traefik
+  # routes by SNI to the Gateway's per-tenant receiver, which only accepts
+  # certificates of that tenant's CA. The server certificate is verified
+  # against the internal root CA under the SNI name (F08).
+  otlp/app:
+    endpoint: "{{ traefik_otlp_ip }}:14317"
+    tls:
+      cert_file: /etc/otelcol-tomcat/tls/client.crt
+      key_file: /etc/otelcol-tomcat/tls/client.key
+      ca_file: /etc/otelcol-tomcat/tls/ca.crt
+      server_name_override: "{{ tenant_id }}.otlp.internal"
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
+
+service:
+  # Own self-monitoring metrics port, not the collector's built-in
+  # default (127.0.0.1:8888) - already taken by the platform collector's
+  # own otelcol-contrib instance running on the same VM (found live:
+  # "address already in use", this second instance failed to start at
+  # all until given its own port).
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8889
+  pipelines:
+    logs:
+      receivers: [filelog/tomcat]
+      processors: [memory_limiter, resource/tomcat-logs, batch]
+      exporters: [otlp/app]
+    # The Java agent already sets service/resource attributes itself.
+    logs/agent:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/app]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/app]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/app]

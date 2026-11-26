@@ -1,0 +1,15 @@
+[Unit]
+Description=OTel Collector - Tomcat log file shipping
+After=network.target tomcat.service
+
+[Service]
+User=otelcol-contrib
+Group=otelcol-contrib
+ExecStart=/usr/bin/otelcol-contrib --config=/etc/otelcol-tomcat/config.yaml
+Environment=HOSTNAME=%H
+EnvironmentFile=/etc/os-release
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

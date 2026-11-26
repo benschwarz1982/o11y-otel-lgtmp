@@ -1,0 +1,56 @@
+---
+name: Demo
+
+# Break and fix the four demo use cases (README "Demo"): each "break"
+# makes an alert fire (and OpenClaw react), "fix" restores the system.
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Use case step
+        type: choice
+        options:
+          - uc1-break
+          - uc1-fix
+          - uc2-break
+          - uc2-fix
+          - uc3-break
+          - uc3-fix
+          - uc4-break
+          - uc4-fix
+
+permissions: {}
+
+jobs:
+  run:
+    name: ${{ inputs.scenario }}
+    runs-on: [self-hosted, linux, otel-demo]
+    environment: demo
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    container:
+      image: ${{ vars.CI_IMAGE_PREFIX || format('ghcr.io/{0}/ci-tools', github.repository) }}/terraform:v1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      AZURE_RESOURCE_GROUP: rg-bensc-001
+      AKS_CLUSTER_NAME: aks-otel-demo
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/azure-setup
+        with:
+          kubeconfig: "true"
+      - env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: ci/scripts/demo.sh "${SCENARIO}"
+      - name: Clean up workspace
+        if: always()
+        run: ci/scripts/cleanup.sh

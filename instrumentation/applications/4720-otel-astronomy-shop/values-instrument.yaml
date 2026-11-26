@@ -1,0 +1,28 @@
+---
+# Instrumentation overlay for the Astronomy Shop Demo (system_id 4720) -
+# layered on top of values.yaml when var.instrument is true (see
+# terraform/environments/fleet-4720-otel-astronomy-shop's helm_release)
+# - see values.yaml's own comment for why the split.
+default:
+  envOverrides:
+    # Every service builds its OTLP endpoint as
+    # "http://$(OTEL_COLLECTOR_NAME):4317|4318" - overriding this one
+    # variable redirects the whole chart at this platform's gateway
+    # instead of the (disabled) bundled collector, with no per-service
+    # changes needed.
+    - name: OTEL_COLLECTOR_NAME
+      value: otel-gateway-collector.observability.svc.cluster.local
+    # Tenant routing: the gateway's headers_setter extension reads this
+    # "tenant_id" metadata key from each request and forwards it as
+    # X-Scope-OrgID to Mimir/Loki/Tempo - same mechanism VM-based clients
+    # use via their local collector's exporter headers, just set
+    # directly here since these services are off-the-shelf OTel-SDK
+    # instrumented, not routed through a local collector config.
+    - name: OTEL_EXPORTER_OTLP_HEADERS
+      value: tenant_id=4720-prod
+    # schema/core.yaml's Core Schema - platform.type is static
+    # (Kubernetes-pod-based, like every other service in this chart);
+    # the rest mirrors this system's own manifest entry (owner.team/
+    # cost_center/environments[].size).
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: platform.type=kubernetes,deployment.environment=prod,app.owner=Platform Engineering,app.cost_center=CC-4720,app.size_class=M

@@ -1,0 +1,16 @@
+---
+# Platform-basis tier, Windows only (IaC Roadmap milestone, first pass) -
+# run by the instrumentation-1229-windows-basis CI job against a
+# one-host, freshly-generated inventory (see
+# ansible/inventory/generated.ini - not committed, written per run).
+# Connection vars (ansible_connection/ansible_winrm_*/ansible_password)
+# live in that generated inventory, not here - see ansible/README.md.
+#
+# A separate playbook from onboard-platform-linux.yml - see that file's
+# own comment for why.
+
+- name: Configure platform-basis Windows hosts
+  hosts: platform_windows
+  gather_facts: false
+  roles:
+    - platform-windows

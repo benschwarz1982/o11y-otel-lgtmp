@@ -1,0 +1,5 @@
+---
+- name: Restart otelcol-contrib
+  ansible.windows.win_service:
+    name: otelcol-contrib
+    state: restarted

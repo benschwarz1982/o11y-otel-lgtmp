@@ -1,0 +1,598 @@
+{
+  "title": "Cloud Container Plattform",
+  "uid": "system-4087",
+  "tags": [
+    "onboarding",
+    "platform"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "custom",
+        "query": "PROD : prod",
+        "current": {},
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "System",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 7
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Cloud Container Plattform** (`4087`, type `platform`)\n\nTenant: `4087-${env}`\n\nOwner: Platform Engineering (platform-team@example.com)\n\nPart of UC3: Kubernetes Microservices (see the main README's Demo Use Cases) - see also [4720-OTel Astronomy Shop Demo](/d/system-4720)."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Configured Ingestion Budget",
+      "type": "text",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 9,
+        "h": 7
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**PROD**: 750 GB total (25 GB/day x 30 days retention, size `L`)\n\nRendered from the manifest at generation time - not a live query. See **Ingestion Budget Usage** alongside for the live percentage."
+      }
+    },
+    {
+      "id": 8,
+      "title": "Ingestion Budget Usage (per Signal)",
+      "description": "This tenant's real ingested volume since local midnight (Europe/Zurich), as a percentage of EACH signal's own daily budget - Metrics (Mimir), Logs (Loki), Traces (Tempo), Profiles (Pyroscope) each shown as its own line. Both values read directly from two gauges scripts/ingestion-midnight-snapshot.py pushes every 2 minutes (demo_ingestion_since_midnight, demo_ingestion_daily_budget) - no subtraction on this panel's own side (NFR-05 SECOND pre-test audit round, fixed here: this used to recompute \"current minus a separately-pushed day-start snapshot\" in this panel's OWN PromQL, independently of - and able to silently disagree with - the enforcer's own decision, with its own version of that script's pre-fix reset-insensitivity; both now read the exact same, already-correct value). Green below 80%, yellow 80-90%, red above 90%. Same formula as the Operator: Tenant Ingestion Budget dashboard's own panel, filtered to this one tenant. Queried via the Mimir-anonymous datasource, not Mimir-4087-${env} - see README.md's Multi-Tenancy section for why (self-monitoring metrics land under the anonymous tenant).",
+      "type": "timeseries",
+      "datasource": "Mimir-anonymous",
+      "gridPos": {
+        "x": 17,
+        "y": 0,
+        "w": 7,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 120,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": false,
+          "expr": "100 * demo_ingestion_since_midnight{tenant=~\"4087-${env}\"} / on(tenant, signal) demo_ingestion_daily_budget{tenant=~\"4087-${env}\"}",
+          "legendFormat": "{{signal}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Active Metric Series (this tenant)",
+      "type": "stat",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count({__name__=~\".+\"})",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Metric Series Over Time",
+      "type": "timeseries",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 6,
+        "y": 7,
+        "w": 18,
+        "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count({__name__=~\".+\"})",
+          "legendFormat": "active series"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Log Volume by Namespace",
+      "type": "timeseries",
+      "datasource": "Loki-4087-${env}",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (k8s_namespace_name) (count_over_time({k8s_namespace_name=~\".+\"}[$__interval]))",
+          "legendFormat": "{{k8s_namespace_name}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Recent Logs",
+      "type": "logs",
+      "datasource": "Loki-4087-${env}",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 8
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{k8s_namespace_name=~\".+\"}"
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "title": "Node CPU Usage (cores)",
+      "type": "timeseries",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "k8s_node_cpu_usage",
+          "legendFormat": "{{k8s_node_name}}"
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "title": "Node Memory Working Set",
+      "type": "timeseries",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "k8s_node_memory_working_set_bytes",
+          "legendFormat": "{{k8s_node_name}}"
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "title": "Pod CPU Usage - Top 10",
+      "type": "timeseries",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, k8s_pod_cpu_usage)",
+          "legendFormat": "{{k8s_namespace_name}}/{{k8s_pod_name}}"
+        }
+      ]
+    },
+    {
+      "id": 105,
+      "title": "Pod Memory Usage - Top 10",
+      "type": "timeseries",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, k8s_pod_memory_working_set_bytes)",
+          "legendFormat": "{{k8s_namespace_name}}/{{k8s_pod_name}}"
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "title": "Node Filesystem Usage",
+      "type": "timeseries",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "k8s_node_filesystem_usage_bytes / k8s_node_filesystem_capacity_bytes * 100",
+          "legendFormat": "{{k8s_node_name}}"
+        }
+      ]
+    },
+    {
+      "id": 107,
+      "title": "Total Pods",
+      "type": "stat",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 4,
+        "h": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(count by (k8s_namespace_name, k8s_pod_name) (k8s_pod_cpu_usage))",
+          "legendFormat": "pods"
+        }
+      ]
+    },
+    {
+      "id": 108,
+      "title": "Total Nodes",
+      "type": "stat",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 16,
+        "y": 44,
+        "w": 4,
+        "h": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(count by (k8s_node_name) (k8s_node_cpu_usage))",
+          "legendFormat": "nodes"
+        }
+      ]
+    },
+    {
+      "id": 109,
+      "title": "Collector Uptime (longest-running instance)",
+      "type": "stat",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 20,
+        "y": 44,
+        "w": 4,
+        "h": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(otelcol_process_uptime_total)",
+          "legendFormat": "uptime"
+        }
+      ]
+    },
+    {
+      "id": 110,
+      "title": "Telemetry Ingest Rate (accepted, per second)",
+      "description": "The gateway collector's own receiver-level metrics - self-monitoring data, lives under the anonymous tenant like all self-scraped metrics, not this system's own tenant. See README.md's Multi-Tenancy section.",
+      "type": "timeseries",
+      "datasource": "Mimir-anonymous",
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(otelcol_receiver_accepted_spans_total[$__rate_interval]))",
+          "legendFormat": "spans"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(otelcol_receiver_accepted_metric_points_total[$__rate_interval]))",
+          "legendFormat": "metric points"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(otelcol_receiver_accepted_log_records_total[$__rate_interval]))",
+          "legendFormat": "log records"
+        }
+      ]
+    },
+    {
+      "id": 111,
+      "title": "Telemetry Refused/Failed Rate (per second)",
+      "description": "The gateway collector's own receiver-level metrics - self-monitoring data, lives under the anonymous tenant like all self-scraped metrics, not this system's own tenant. See README.md's Multi-Tenancy section.",
+      "type": "timeseries",
+      "datasource": "Mimir-anonymous",
+      "gridPos": {
+        "x": 12,
+        "y": 50,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(otelcol_receiver_refused_spans_total[$__rate_interval]))",
+          "legendFormat": "refused spans"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(otelcol_receiver_refused_metric_points_total[$__rate_interval]))",
+          "legendFormat": "refused metric points"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(otelcol_receiver_refused_log_records_total[$__rate_interval]))",
+          "legendFormat": "refused log records"
+        }
+      ]
+    },
+    {
+      "id": 112,
+      "title": "Persistent Volume Usage (LGTM stack)",
+      "description": "PVC-backed volume usage for the observability namespace's own stateful components (Mimir/Loki/Tempo ingesters+compactors+store-gateways, Grafana, Kafka, MinIO) - not every k8s_volume_name in this namespace, only PVC-backed ones. Wrapped both sides of the division in max by (k8s_pod_name, k8s_volume_name)(...) - found live that a pod rescheduled to a different node briefly produces two label sets for the same k8s_pod_name (differing only in k8s_node_name, one per reporting node-agent), which PromQL's on(...) join can't disambiguate (\"found duplicate series\"); max collapses that back to one value regardless of which node currently reports it. The kubeletstats receiver's volume metric group doesn't expose a volume-type label to distinguish PVC from ConfigMap/Secret/projected-token/emptyDir volumes, so this filters by an explicit pod+volume-name allowlist verified live against `kubectl get pvc -n observability` instead - update it if a new stateful component is added to the stack.",
+      "type": "table",
+      "datasource": "Mimir-4087-${env}",
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 24,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "custom": {
+            "cellOptions": {
+              "type": "color-background"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "k8s_pod_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Pod"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto"
+                }
+              },
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "k8s_volume_name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Volume"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto"
+                }
+              },
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "instant": true,
+          "expr": "100 * (1 - max by (k8s_pod_name, k8s_volume_name) (k8s_volume_available_bytes{k8s_namespace_name=\"observability\", k8s_pod_name=~\"loki-compactor-.*|loki-ingester-zone-.*|tempo-kafka-.*|mimir-compactor-.*|mimir-ingester-zone-.*|mimir-store-gateway-zone-.*|mimir-kafka-.*|minio-.*|grafana-.*\", k8s_volume_name=~\"data|storage|grafana|kafka-data|export\"}) / on(k8s_pod_name, k8s_volume_name) max by (k8s_pod_name, k8s_volume_name) (k8s_volume_capacity_bytes{k8s_namespace_name=\"observability\", k8s_pod_name=~\"loki-compactor-.*|loki-ingester-zone-.*|tempo-kafka-.*|mimir-compactor-.*|mimir-ingester-zone-.*|mimir-store-gateway-zone-.*|mimir-kafka-.*|minio-.*|grafana-.*\", k8s_volume_name=~\"data|storage|grafana|kafka-data|export\"}))",
+          "legendFormat": "__auto"
+        }
+      ]
+    }
+  ]
+}

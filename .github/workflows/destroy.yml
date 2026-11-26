@@ -1,0 +1,202 @@
+---
+name: Destroy
+
+# Manual only, guarded by typing "destroy". "everything" tears the demo
+# down in reverse dependency order:
+#   aiops -> fleets + tenants -> observability-stack -> infra
+# tenants must go before observability-stack (its gateway CR is deleted
+# with kubectl and needs the OpenTelemetryCollector CRD the stack
+# installs). 4711/4722 live on the 1286/1229 VMs and go with them.
+# Resources outside the Terraform states (state storage, aks-vnet, DNS
+# zone, runner VM) are never touched.
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: What to destroy
+        type: choice
+        default: everything
+        options:
+          - everything
+          - aiops
+          - fleets
+          - tenants
+          - observability-stack
+          - infra
+      systems:
+        description: 'Systems for fleets: "all" or IDs, e.g. "1294,4015"'
+        type: string
+        default: all
+      confirm:
+        description: Type "destroy" to confirm
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: demo-environment
+  cancel-in-progress: false
+
+env:
+  AZURE_RESOURCE_GROUP: rg-bensc-001
+  AKS_CLUSTER_NAME: aks-otel-demo
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC: "true"
+  ARM_USE_AZUREAD: "true"
+  TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+  TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+  TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+
+jobs:
+  setup:
+    name: Confirm and plan the run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      aiops: ${{ steps.scope.outputs.aiops }}
+      tenants: ${{ steps.scope.outputs.tenants }}
+      stack: ${{ steps.scope.outputs.stack }}
+      infra: ${{ steps.scope.outputs.infra }}
+      fleets: ${{ steps.fleets.outputs.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - id: scope
+        env:
+          SCOPE: ${{ inputs.scope }}
+          CONFIRM: ${{ inputs.confirm }}
+          SYSTEMS: ${{ inputs.systems }}
+        run: |
+          if [ "${CONFIRM}" != destroy ]; then
+            echo "::error::Safety check: type \"destroy\" into the confirm field to actually destroy."
+            exit 1
+          fi
+          # A partial fleet teardown before deleting the cluster/VNet would
+          # strand the remaining fleet states.
+          if [ "${SCOPE}" = everything ] && [ "${SYSTEMS}" != all ]; then
+            echo "::error::scope \"everything\" destroys all systems - leave systems at \"all\" or use scope \"fleets\"."
+            exit 1
+          fi
+          on() { [ "${SCOPE}" = everything ] || [ "${SCOPE}" = "$1" ] && echo true || echo false; }
+          {
+            echo "aiops=$(on aiops)"
+            echo "tenants=$(on tenants)"
+            echo "stack=$(on observability-stack)"
+            echo "infra=$(on infra)"
+          } | tee -a "$GITHUB_OUTPUT"
+      - id: fleets
+        env:
+          SCOPE: ${{ inputs.scope }}
+          SYSTEMS: ${{ inputs.systems }}
+        run: |
+          if [ "${SCOPE}" = everything ] || [ "${SCOPE}" = fleets ]; then
+            ci/scripts/select-systems.sh destroy "${SYSTEMS}"
+          else
+            echo "platform=[]" >> "$GITHUB_OUTPUT"
+          fi
+
+  aiops:
+    name: AIOps (OpenClaw)
+    needs: setup
+    if: needs.setup.outputs.aiops == 'true'
+    runs-on: &runner [self-hosted, linux, otel-demo]
+    environment: &environment demo
+    permissions: &permissions
+      contents: read
+      id-token: write
+      packages: read
+    container: &terraform-container
+      image: ${{ vars.CI_IMAGE_PREFIX || format('ghcr.io/{0}/ci-tools', github.repository) }}/terraform:v1
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      TF_VAR_anthropic_setup_token: ${{ secrets.ANTHROPIC_SETUP_TOKEN }}
+      TF_VAR_openclaw_gateway_token: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+      TF_VAR_openclaw_hooks_token: ${{ secrets.OPENCLAW_HOOKS_TOKEN }}
+      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID }}
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/azure-setup
+      - run: ci/scripts/platform.sh aiops destroy
+      - &cleanup
+        name: Clean up workspace
+        if: always()
+        run: ci/scripts/cleanup.sh
+
+  fleets:
+    name: Fleet ${{ matrix.system }}
+    needs: [setup, aiops]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.fleets != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.fleets) }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *terraform-container
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+      - run: ci/scripts/fleet.sh "${{ matrix.system }}" destroy
+      - *cleanup
+
+  tenants:
+    name: Tenants
+    needs: [setup, aiops]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.tenants == 'true' }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *terraform-container
+    env:
+      TF_VAR_openclaw_gateway_token: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+      - run: ci/scripts/platform.sh tenants destroy
+      - *cleanup
+
+  observability-stack:
+    name: Observability stack
+    needs: [setup, fleets, tenants]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.stack == 'true' }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *terraform-container
+    env:
+      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID }}
+      TF_VAR_cert_manager_client_secret: ${{ secrets.CERT_MANAGER_CLIENT_SECRET }}
+      TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+      TF_VAR_openclaw_hooks_token: ${{ secrets.OPENCLAW_HOOKS_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+      - run: ci/scripts/platform.sh observability-stack destroy
+      - *cleanup
+
+  infra:
+    name: Infra (AKS + network)
+    needs: [setup, observability-stack]
+    if: ${{ !cancelled() && !failure() && needs.setup.outputs.infra == 'true' }}
+    runs-on: *runner
+    environment: *environment
+    permissions: *permissions
+    container: *terraform-container
+    steps:
+      - *checkout
+      - uses: ./.github/actions/azure-setup
+      - run: ci/scripts/platform.sh infra destroy
+      - *cleanup

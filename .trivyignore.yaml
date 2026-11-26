@@ -1,0 +1,25 @@
+---
+# Baseline for validate:iac (.gitlab-ci.yml, `trivy config`): the
+# HIGH/CRITICAL findings that already existed when the scan was
+# introduced, so the job starts green and only NEW findings fail it -
+# NOT a statement that these are fine.
+#
+# Terraform findings are NOT listed here: they are ignored inline, with
+# a `#trivy:ignore:<ID>` comment directly on the one resource they were
+# found on (open SSH/RDP/WinRM NSG rules in modules/client-vm, the AKS
+# cluster in modules/aks-cluster, the two storage accounts). An entry in
+# this file can only be scoped to a whole file, which would also hide
+# the same finding on any resource added to that file later.
+#
+# Remove an ignore once its finding is fixed (or keep it, with the
+# reason rewritten, once it is a deliberate, accepted demo trade-off).
+misconfigurations:
+  # Only here because an inline ignore would mean editing the
+  # Dockerfile, which rebuilds every ci-tools image; the file defines
+  # nothing but those images.
+  - id: DS-0002
+    paths:
+      - ci/images/Dockerfile
+    statement: >-
+      Baseline, not yet assessed. CI tool images run as root (no USER
+      instruction).

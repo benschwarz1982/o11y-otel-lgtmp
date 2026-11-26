@@ -1,0 +1,8 @@
+# Top-level dependencies of the onboarding scripts under scripts/
+# (validate:manifests, tenants:create-mr/update-mr/offboarding-mr,
+# tenants:apply in .gitlab-ci.yml) - one shared set, each job installs all of it.
+# Edit this file, then regenerate the .txt - see README.md in this directory.
+jsonschema
+pyyaml
+requests
+ruamel.yaml>=0.18

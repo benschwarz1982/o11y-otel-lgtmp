@@ -1,0 +1,332 @@
+---
+# Telemetry Resource Attribute Schema - Core + Platform + Application
+# layers. Adopted from an external design doc proposed for a larger
+# observability program, adapted to this repo's actual fixed demo
+# fleet - see README.md's "B10. Telemetry Schema" for the summary and
+# how this fits alongside the tenant_id/X-Scope-OrgID mechanism
+# (Multi-Tenancy, B9). The two are complementary, not the same thing:
+# tenant_id is a transport-level header controlling which backend
+# tenant a signal lands in; this schema controls the shape of the
+# resource attributes attached to the signal itself, regardless of
+# which tenant it lands in.
+#
+# Versioning: Git/PR review is the only versioning mechanism for this
+# file - no OTel schema_url/schemaprocessor runtime enforcement is
+# configured (considered, not adopted - see README.md's B10 for why).
+schema_version: "1.0.0"
+
+# ---------------------------------------------------------------------------
+# 1. Core Schema (mandatory on every platform's telemetry)
+# ---------------------------------------------------------------------------
+resource_attributes:
+  service.name:
+    required: true
+    type: string
+    description: >-
+      This system's own name. Already set by every platform template
+      under instrumentation/platforms/, and directly in each app's own
+      code (app/*/) - this schema just makes the convention explicit
+      instead of ad hoc.
+    example: kundenverwaltung
+
+  service.namespace:
+    required: true
+    type: string
+    description: "Grouping label - already set everywhere the same way service.name is."
+    example: payments
+
+  service.version:
+    required: false
+    type: string
+    description: "Deploy version/build tag - not currently set anywhere in this demo, optional."
+
+  deployment.environment:
+    required: true
+    type: string
+    allowed_values: [eng, at, prod]
+    description: >-
+      Matches manifests/schema.json's environments[].env exactly (10d
+      retention for eng, 30d for at/prod). New attribute - not
+      currently emitted onto telemetry anywhere, only implicit in the
+      "<system_id>-<env>" tenant_id string today.
+
+  platform.type:
+    required: true
+    type: string
+    allowed_values: [linux, windows, kubernetes, network, object-storage]
+    description: >-
+      The 5 platform types this demo's fixed fleet actually has.
+      New attribute. The wider schema concept this was adopted from
+      also covers netapp/mainframe - neither exists in this repo's
+      fleet, so neither is filled in below (see section 3).
+
+  platform.vendor:
+    required: false
+    type: string
+    example: "rocky | azure-aks"
+    description: "Concrete distribution/vendor, where meaningful."
+
+  app.owner:
+    required: true
+    type: string
+    description: >-
+      Sourced from the manifest's owner.team field
+      (manifests/schema.json) - new as a resource attribute, the
+      manifest field itself already existed.
+
+  app.cost_center:
+    required: true
+    type: string
+    description: >-
+      Sourced from the manifest's cost_center field
+      (manifests/schema.json) - both the manifest field and this
+      resource attribute are new, added together as part of adopting
+      this schema.
+
+  app.size_class:
+    required: true
+    type: string
+    allowed_values: [S, M, L]
+    description: >-
+      Sourced from the manifest's environments[].size field - new as
+      a resource attribute, the manifest field itself already existed
+      and already drives the actual ingestion budget via
+      scripts/calculate-ingestion-budget.py.
+
+# ---------------------------------------------------------------------------
+# 2. Baggage Schema
+# ---------------------------------------------------------------------------
+# Scoped implementation, not both keys everywhere - see each key's own
+# required_for below for why:
+#
+# - correlation.request_id (any single HTTP service): implemented in
+#   app/4721-kundenverwaltung/Main.java and app/4722-spesenabrechnung/
+#   Program.cs - the only two apps in this repo's fleet with source
+#   code this repo owns. Set on Baggage, and explicitly on the current
+#   span attribute + log line (neither the SDK nor the collector
+#   copies Baggage onto attributes automatically - the collector in
+#   particular has no way to: Baggage is a W3C propagation-context
+#   header carried between application services, not part of the OTLP
+#   wire format a completed span/log record carries to the collector,
+#   so nothing arrives there to "promote"). Verified live on both
+#   apps: a real request makes correlation.request_id appear as a
+#   queryable Tempo span attribute (Spesenabrechnung specifically
+#   needs a real POST /expenses - the attribute is only set inside
+#   that handler, a GET never reaches it).
+# - correlation.transaction_id (crosses multiple services): only
+#   meaningfully demonstrable on UC3 (4720, OTel Astronomy Shop Demo) -
+#   the only real, live, multi-hop application-to-application call
+#   chain anywhere in this fleet (every other app talks to its own
+#   backend, or nothing, and never calls another app). This repo
+#   doesn't own that chart's application source, so nothing can be
+#   added to its own code - see scripts/trigger-uc3-transaction.py,
+#   which sends a correctly-formatted baggage header on an initial
+#   request instead. **Verified live, negative result**: the baggage
+#   entry reaches the shop's services (W3C propagation itself works),
+#   but none of them copy it onto a span attribute - searched all 206
+#   known span attribute names on tenant 4720-prod in Tempo after
+#   triggering a real request, zero matches for "correlation". Root
+#   cause confirmed against the upstream project itself, not guessed:
+#   grafana/opentelemetry-demo has no baggage-to-span-attribute
+#   processor wired into any of its services - tracked upstream as
+#   open-telemetry/opentelemetry-demo#1572 (open, unimplemented, no
+#   config flag). Several individual OTel SDKs (Go/Python/JS/.NET/
+#   Ruby) do support a "baggage span processor" at the SDK level, but
+#   the demo chart doesn't enable one for any service, and wiring it
+#   up would mean editing that chart's own per-service source code
+#   across several languages - source access this repo deliberately
+#   doesn't have (same boundary as 4720's Pyroscope profiling scope).
+baggage_keys:
+  correlation.transaction_id:
+    required_for: [cross-platform-flows]
+    description: "Business-transaction ID, propagated across service hops."
+  correlation.request_id:
+    required_for: [http-services]
+    description: "Technical request ID, useful where trace context breaks."
+
+rule: >-
+  Baggage values must NEVER be exported as a metric label. Trace/log
+  attributes only - see the Cardinality Rule below.
+
+# ---------------------------------------------------------------------------
+# 3. Platform Extensions
+# ---------------------------------------------------------------------------
+# One block per platform type this demo's fleet actually has. Each
+# extends the Core Schema above with attributes that already exist in
+# this repo's own collector configs today (this section documents the
+# existing convention, it doesn't introduce new per-platform
+# attributes beyond platform.type/platform.vendor from section 1).
+# Every entry's `template` is the single canonical file - also what's
+# actually deployed live (see each `deployed_via` for the mechanism).
+# No separate "reference" vs. "live" copy exists anywhere anymore -
+# collapsed this session after finding the two had drifted apart for
+# Linux/Windows (the ansible/roles/*/templates/*.j2 mirrors never got
+# this schema's attributes) - see README.md's Known Pitfalls.
+platform_extensions:
+  linux:
+    extends: core.yaml
+    guide: instrumentation/platforms/1286-linux-basis/README.md
+    template: instrumentation/platforms/1286-linux-basis/config.yaml
+    deployed_via: ansible/roles/platform-linux/  # template: renders this
+    # file directly via Ansible's `template` module, run by
+    # deploy-instrumentations:1286-linux-basis
+    attributes:
+      host.name: {required: true}
+      os.type: {required: true, value: linux}
+      os.name: {required: false, description: "Real distro, e.g. Rocky Linux"}
+      os.version: {required: false}
+
+  windows:
+    extends: core.yaml
+    guide: instrumentation/platforms/1229-windows-basis/README.md
+    template: instrumentation/platforms/1229-windows-basis/config.yaml
+    deployed_via: ansible/roles/platform-windows/  # same pattern, run by
+    # deploy-instrumentations:1229-windows-basis
+    attributes:
+      host.name: {required: true}
+      os.type: {required: true, value: windows}
+      os.name: {required: false}
+      os.version: {required: false}
+
+  kubernetes:
+    extends: core.yaml
+    guide: instrumentation/platforms/4087-container-platform/README.md
+    template: instrumentation/platforms/4087-container-platform/config.yaml
+    deployed_via: terraform/environments/observability-stack-crs/  # yamldecode(file(...)),
+    # applied as an OpenTelemetryCollector CR
+    attributes:
+      k8s.cluster.name: {required: false, description: "Not currently set - single-cluster demo, no need yet"}
+      k8s.namespace.name: {required: true, description: "Set via the k8sattributes processor at the gateway"}
+      k8s.pod.name: {required: false}
+
+  network-device:
+    extends: core.yaml
+    guide: instrumentation/platforms/1294-netzwerk-basis/README.md
+    template: instrumentation/platforms/1294-netzwerk-basis/config.yaml
+    deployed_via: terraform/environments/fleet-1294-netzwerk-basis/  # file(...)
+    attributes:
+      interface: {required: false, description: "Per-interface resource attribute, from the snmp receiver's own resource_attributes (ifDescr OID)"}
+
+  object-storage:
+    extends: core.yaml
+    guide: instrumentation/platforms/object-storage/README.md
+    template: instrumentation/platforms/object-storage/workload.py  # a Python
+    # workload, not YAML - sets attributes via the SDK directly
+    deployed_via: terraform/environments/fleet-4015-filestorage/  # file(...)
+    attributes: {}
+
+  # Platform types the wider schema concept covers, deliberately NOT
+  # part of this demo's fixed fleet - reference guides only, to
+  # demonstrate the model's extensibility (instrumentation/platforms/4015-filestorage/,
+  # instrumentation/platforms/1285-mainframe-basis/ - both folder
+  # names carry an illustrative, not real, ID prefix), no config
+  # template and no deployed_via, since neither is ever actually
+  # applied here.
+  not_present:
+    - netapp        # instrumentation/platforms/4015-filestorage/ - a type
+    # identifier, independent of that folder's own name, same as
+    # network-device above stays network-device regardless of its
+    # folder being instrumentation/platforms/1294-netzwerk-basis/
+    - mainframe-zos  # instrumentation/platforms/1285-mainframe-basis/
+
+# ---------------------------------------------------------------------------
+# 4. Application Extensions
+# ---------------------------------------------------------------------------
+# Namespace convention: app.<service.name>.* - prevents collisions
+# between applications. Worked examples from this demo's actual apps;
+# no per-app YAML file per application (unlike the platform
+# extensions above), since app-level attributes are set directly in
+# each app's own OTel SDK/agent config, not a shared template - see
+# each entry's own config: pointer for exactly which live file that
+# is (usually NOT the matching instrumentation/middleware/*/
+# reference template - that stays the onboarding starting point for a
+# *new* app, see its own README for why the live one differs).
+application_extensions:
+  # 4711 Mitarbeiterverzeichnis - Java/Tomcat. Its own attributes are
+  # embedded directly in Tomcat's systemd unit, not the generic Java
+  # template.
+  mitarbeiterverzeichnis:
+    language: java
+    config: instrumentation/middleware/tomcat/tomcat.service.j2
+    attributes: {}
+
+  # 4722 Spesenabrechnung - .NET. Its own attributes are set directly
+  # in a win_environment loop, not the generic .NET template.
+  spesenabrechnung:
+    language: dotnet
+    config: ansible/roles/middleware-dotnet/tasks/instrument.yml
+    attributes: {}
+
+  # 4721 Kundenverwaltung - Java, plain JDK HttpServer + JDBC. No
+  # middleware template applies (not Tomcat-hosted) - its own
+  # attributes are set directly in Terraform-managed env blocks.
+  kundenverwaltung:
+    language: java
+    config: terraform/environments/fleet-4139-postgresql/main.tf
+    attributes: {}
+
+  # 4720 OTel Astronomy Shop Demo - polyglot (the official OTel demo's
+  # own mix of languages per microservice), not a single language
+  # stack. helm/values/otel-demo-values.yaml is the chart's own base
+  # config (subcharts disabled) - carries none of this schema's
+  # attributes itself, so config: points at the file that does.
+  otel-astronomy-shop:
+    language: polyglot
+    config: instrumentation/applications/4720-otel-astronomy-shop/values-instrument.yaml
+    attributes: {}
+
+  # Language/app stacks the wider schema concept could cover but this
+  # demo doesn't have any example of (no such application in the fixed
+  # fleet) - deliberately not filled in, same principle as
+  # not_present above.
+  not_present:
+    - python-service   # the filestorage workload is a synthetic load
+    # generator, not an app pattern worth its own
+    # application_extensions entry
+    - go
+    - nodejs-standalone  # astronomy-shop's own services use Node among
+    # others, but bundled via the upstream chart, not a standalone
+    # example this repo owns
+
+# ---------------------------------------------------------------------------
+# 5. Cardinality Rule
+# ---------------------------------------------------------------------------
+# This repo already hit this problem once for real (see README.md's
+# Known Pitfalls: the hostmetrics "processes" scraper pushed ~130
+# per-process series per scrape, hitting the tenant's ingestion
+# burst limit) - that fix was a one-off (remove the scraper). This
+# section generalizes the same protective principle into an explicit,
+# reusable rule instead of a fix applied only when something actually
+# breaks.
+cardinality_rule:
+  - tier: trace_or_log_attribute
+    allowed: always
+    examples: [correlation.transaction_id, correlation.request_id, account/customer IDs]
+  - tier: metric_label_low_cardinality
+    allowed: always
+    examples: [service.name, platform.type, deployment.environment]
+  - tier: metric_label_bounded_cardinality
+    allowed: only if the value set is known and bounded
+    examples: [k8s.pod.name, interface]
+  - tier: metric_label_never
+    allowed: never
+    examples: [correlation.transaction_id, correlation.request_id, account/customer IDs]
+    enforcement: >-
+      A filter/transform processor pair on the gateway's metrics
+      pipeline (collector-gateway/otel-gateway-collector.yaml)
+      strips these before prometheusremotewriteexporter - see that
+      file's own comment for the concrete implementation.
+
+# ---------------------------------------------------------------------------
+# 6. Governance
+# ---------------------------------------------------------------------------
+# Simpler than the 3-tier platform-team model this schema was adapted
+# from - this repo has one maintainer and one Git history, not
+# separate platform teams each owning their own extension file.
+governance:
+  model: single-repo
+  process: >-
+    Changes to this file (core schema, platform extensions, or
+    application extensions) go through the same PR review as any
+    other collector-config change in this repo - no separate approval
+    process.

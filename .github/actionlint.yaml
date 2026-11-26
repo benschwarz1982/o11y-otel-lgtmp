@@ -1,0 +1,4 @@
+---
+self-hosted-runner:
+  # Self-hosted runner on the management VM (see bootstrap/github-runner.sh)
+  labels: [otel-demo]

@@ -1,0 +1,44 @@
+---
+# G03 (FR-10): OpenSLO v1 source - scripts/generate-rules.py turns it
+# into Mimir ruler rules (rules/4721-prod/slo.yaml) via Sloth.
+# SLI: share of Kundenverwaltung spans (HTTP handling and its database
+# calls) that did not end in an error, from Tempo's span metrics.
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: kundenverwaltung-availability
+  displayName: Kundenverwaltung - erfolgreiche Verarbeitung
+spec:
+  service: kundenverwaltung
+  description: >-
+    99.5% of all Kundenverwaltung operations succeed over 30 days.
+    Data source: traces_spanmetrics_calls_total (Tempo metrics generator,
+    tenant 4721-prod). Missing data is not counted as success: see
+    the SLONoData alert and the data coverage panel.
+  budgetingMethod: Occurrences
+  timeWindow:
+    - duration: 30d
+      isRolling: true
+  objectives:
+    - displayName: 99.5% successful
+      target: 0.995
+  indicator:
+    metadata:
+      name: kundenverwaltung-span-success
+    spec:
+      ratioMetric:
+        counter: true
+        good:
+          metricSource:
+            type: Prometheus
+            spec:
+              # "or 0 * total": with only error spans the good series is
+              # absent - without this the SLI would vanish instead of
+              # dropping to 0% during a total outage.
+              query: sum(rate(traces_spanmetrics_calls_total{service="kundenverwaltung", status_code!="STATUS_CODE_ERROR"}[{{.window}}]))
+                or 0 * sum(rate(traces_spanmetrics_calls_total{service="kundenverwaltung"}[{{.window}}]))
+        total:
+          metricSource:
+            type: Prometheus
+            spec:
+              query: sum(rate(traces_spanmetrics_calls_total{service="kundenverwaltung"}[{{.window}}]))

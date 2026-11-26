@@ -1,0 +1,18 @@
+---
+system_id: '4720'
+type: application
+name: OTel Astronomy Shop Demo
+owner:
+  team: Platform Engineering
+  contact: platform-team@example.com
+cost_center: CC-4720
+environments:
+  - env: prod
+    size: L
+k8s_namespaces:
+  prod:
+    - astronomy-shop
+platform_refs:
+  - '4087'
+dashboard_template: applications/microservices-k8s.template.json
+demo_narrative: "Part of UC3: Kubernetes Microservices (see the main README's Demo Use Cases) - see also [4087-Cloud Container Plattform](/d/system-4087)."

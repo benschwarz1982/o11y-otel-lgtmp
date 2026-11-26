@@ -1,0 +1,149 @@
+---
+# Bare Apache Tomcat with its bundled example webapp (stands in for a
+# custom Mitarbeiterverzeichnis app - there is no such app source
+# anywhere in this repo), no OTel instrumentation yet (see instrument.yml
+# for that, run as a separate CI job/tag). This role is the single
+# canonical implementation - a hand-runnable shell-script equivalent
+# used to be kept alongside it for readability, but was dropped once
+# it had already silently drifted from what this role actually does
+# (see README.md's Known Pitfalls for the OTEL_RESOURCE_ATTRIBUTES bug
+# that drift caused, still present in the shell version right up until
+# it was deleted).
+
+- name: Install Java and wget
+  ansible.builtin.dnf:
+    name:
+      - java-17-openjdk
+      - wget
+    state: present
+
+- name: Create Tomcat user
+  ansible.builtin.user:
+    name: tomcat
+    system: true
+    create_home: true
+    home: /opt/tomcat
+    shell: /sbin/nologin
+
+- name: Create the Tomcat download cache directory
+  # Root-only, not world-writable /tmp: the archive is extracted by a
+  # privileged run.
+  ansible.builtin.file:
+    path: /var/cache/tomcat-download
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Download Apache Tomcat
+  # archive.apache.org, not dlcdn.apache.org - see the original script's
+  # own comment, dlcdn only mirrors the single latest patch release per
+  # branch and prunes older ones.
+  ansible.builtin.get_url:
+    url: "https://archive.apache.org/dist/tomcat/tomcat-{{ tomcat_major_version }}/v{{ tomcat_version }}/bin/apache-tomcat-{{ tomcat_version }}.tar.gz"
+    # Versioned file name; the published .sha512 is checked on every run.
+    dest: "/var/cache/tomcat-download/apache-tomcat-{{ tomcat_version }}.tar.gz"
+    checksum: "sha512:https://archive.apache.org/dist/tomcat/tomcat-{{ tomcat_major_version }}/v{{ tomcat_version }}/bin/apache-tomcat-{{ tomcat_version }}.tar.gz.sha512"
+    mode: "0600"
+
+- name: Read the installed Tomcat version
+  # Root-owned marker written after a successful extract - the download
+  # cache alone can't tell (a re-run after an aborted install, or a
+  # rollback to an already cached version, reports it unchanged).
+  ansible.builtin.slurp:
+    src: /opt/tomcat/.installed-version
+  register: tomcat_installed_marker
+  failed_when: false
+
+- name: Decide whether Tomcat needs a (re)install
+  ansible.builtin.set_fact:
+    tomcat_upgrade: "{{ (tomcat_installed_marker.content | default('') | b64decode | trim) != tomcat_version }}"
+
+- name: Read service states before a Tomcat version change
+  ansible.builtin.service_facts:
+  when: tomcat_upgrade | bool
+
+- name: Stop Tomcat for a version change
+  # Started again by "Enable and start Tomcat" below - with the bare
+  # (uninstrumented) unit this file deploys, so run
+  # deploy-instrumentations:4711 afterwards (it triggers on the same
+  # group_vars change).
+  ansible.builtin.systemd:
+    name: tomcat
+    state: stopped
+  when:
+    - tomcat_upgrade | bool
+    - "'tomcat.service' in ansible_facts.services"
+
+- name: Remove the previous release's files before extracting a new one
+  # Extracting over the old release would leave files the new archive
+  # no longer has - e.g. Tomcat 10's lib/ecj-4.27.jar next to 11's own
+  # ecj, two JSP compilers on the classpath - and stale compiled JSPs in
+  # work/. /opt/tomcat is also the tomcat user's home and holds the
+  # agent jars (instrument.yml), so only the release directories go.
+  ansible.builtin.file:
+    path: "/opt/tomcat/{{ item }}"
+    state: absent
+  loop: [bin, lib, webapps, work, temp]
+  when: tomcat_upgrade | bool
+
+- name: Extract Apache Tomcat
+  ansible.builtin.unarchive:
+    src: "/var/cache/tomcat-download/apache-tomcat-{{ tomcat_version }}.tar.gz"
+    dest: /opt/tomcat
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+    owner: tomcat
+    group: tomcat
+
+- name: Record the installed Tomcat version
+  ansible.builtin.copy:
+    content: "{{ tomcat_version }}\n"
+    dest: /opt/tomcat/.installed-version
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Make Tomcat's bin/*.sh scripts executable
+  # ansible.builtin.command doesn't invoke a shell, so it never expands
+  # the *.sh glob - found live: "chmod: cannot access
+  # '/opt/tomcat/bin/*.sh': No such file or directory". shell does.
+  ansible.builtin.shell: chmod +x /opt/tomcat/bin/*.sh
+  changed_when: false
+
+- name: Remove the bundled examples webapp's localhost-only restriction
+  # webapps/examples/META-INF/context.xml ships with a RemoteAddrValve
+  # restricting it to localhost - this demo deliberately exposes it
+  # publicly (see the fleet-4711-mitarbeiterverzeichnis NSG rule).
+  ansible.builtin.file:
+    path: /opt/tomcat/webapps/examples/META-INF/context.xml
+    state: absent
+
+- name: Deploy bare Tomcat systemd service (no instrumentation yet)
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../../instrumentation/middleware/tomcat/tomcat.service.j2"
+    dest: /etc/systemd/system/tomcat.service
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    otel_instrumented: false
+
+- name: Open firewalld port 8080, if active
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - firewall-cmd --permanent --add-port=8080/tcp
+    - firewall-cmd --reload
+  changed_when: false
+  failed_when: false
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start Tomcat
+  ansible.builtin.systemd:
+    name: tomcat
+    enabled: true
+    state: started

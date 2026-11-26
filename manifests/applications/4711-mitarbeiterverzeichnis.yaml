@@ -1,0 +1,15 @@
+---
+system_id: '4711'
+type: application
+name: Mitarbeiterverzeichnis
+owner:
+  team: Web App Team
+  contact: webapp-team@example.com
+cost_center: CC-4711
+environments:
+  - env: prod
+    size: S
+platform_refs:
+  - '1286'
+dashboard_template: applications/tomcat-vm.template.json
+demo_narrative: "Demo tenant for UC4: Multi-Tenancy - Ingestion Budget Enforcement (see the main README's Demo Use Cases) - not its own Use Case."

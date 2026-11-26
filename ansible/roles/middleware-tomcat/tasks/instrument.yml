@@ -1,0 +1,199 @@
+---
+# Adds OTel Java auto-instrumentation to the already-running bare
+# Tomcat (install.yml) and starts the traffic generator. Installs its
+# own, second/independent otelcol-contrib instance (otelcol-tomcat.service)
+# for Tomcat's log files and as the local OTLP relay for the Java agent:
+# it sends to the Gateway over mTLS with this application's own tenant
+# certificate (role otlp_client_cert, F03/F08/F11). Never touches
+# roles/platform-linux's otelcol-contrib - see
+# instrumentation/middleware/tomcat/README.md for why that's a separate
+# process. This role is the single canonical implementation -
+# see install.yml's own comment for why the hand-runnable shell-script
+# equivalent that used to sit alongside it is gone.
+#
+# traefik_otlp_ip/pyroscope_internal_ip/tenant_id/service_name/
+# service_namespace/deployment_environment/app_owner/app_cost_center/
+# app_size_class are passed in via -e by the
+# instrumentation-4711-mitarbeiterverzeichnis CI job - see
+# instrumentation/middleware/tomcat/collector-config.yaml's own header
+# for what each one is (pyroscope_internal_ip is the one exception,
+# not shared with that file - see tomcat.service.j2's own comment).
+
+- name: Download OTel Java auto-instrumentation agent
+  ansible.builtin.get_url:
+    url: "https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v{{ otel_java_agent_version }}/opentelemetry-javaagent.jar"
+    dest: /opt/tomcat/otel-javaagent.jar
+    # Fixed dest: without force get_url keeps an existing file, so a
+    # version bump would never reach the VM. Tomcat is restarted below
+    # on every run anyway.
+    force: true
+    owner: tomcat
+    group: tomcat
+    mode: "0644"
+
+- name: Download Pyroscope Java agent
+  # Same "-javaagent, no code change" attach mechanism as the OTel
+  # agent above - continuous profiling, see B12 in the main README.
+  ansible.builtin.get_url:
+    url: "https://github.com/grafana/pyroscope-java/releases/download/v{{ pyroscope_java_agent_version }}/pyroscope.jar"
+    dest: /opt/tomcat/pyroscope-javaagent.jar
+    force: true  # same reason as the OTel agent above
+    owner: tomcat
+    group: tomcat
+    mode: "0644"
+
+# F03: the Pyroscope ingest proxy authenticates the tenant with Basic
+# Auth (user = tenant_id). The password is generated per tenant by
+# terraform/environments/tenants; the CI job's kubeconfig reads it.
+- name: Read this tenant's Pyroscope ingest password
+  ansible.builtin.command:
+    cmd: "kubectl get secret pyroscope-ingest-{{ tenant_id }} -n observability -o jsonpath={.data.password}"
+  delegate_to: localhost
+  become: false
+  register: pyroscope_ingest_password
+  changed_when: false
+  no_log: true
+
+- name: Create /etc/tomcat
+  ansible.builtin.file:
+    path: /etc/tomcat
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the Pyroscope ingest credentials (root-only, read by systemd)
+  ansible.builtin.copy:
+    dest: /etc/tomcat/pyroscope-ingest.env
+    content: |
+      PYROSCOPE_BASIC_AUTH_USER={{ tenant_id }}
+      PYROSCOPE_BASIC_AUTH_PASSWORD={{ pyroscope_ingest_password.stdout | b64decode }}
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Redeploy Tomcat systemd service with the OTel agent attached
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../../instrumentation/middleware/tomcat/tomcat.service.j2"
+    dest: /etc/systemd/system/tomcat.service
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    otel_instrumented: true
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart Tomcat with instrumentation
+  # Explicit, not handler-deferred - the traffic generator below assumes
+  # the instrumented Tomcat is already up, matching the original
+  # script's own restart-then-sleep-then-status-check order.
+  ansible.builtin.systemd:
+    name: tomcat
+    state: restarted
+
+- name: Wait for Tomcat to come back up
+  ansible.builtin.wait_for:
+    port: 8080
+    timeout: 30
+
+- name: Deploy the traffic generator script
+  ansible.builtin.copy:
+    src: tomcat-traffic-generator.sh
+    dest: /usr/local/bin/tomcat-traffic-generator.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the traffic generator systemd service
+  ansible.builtin.copy:
+    src: tomcat-traffic-generator.service
+    dest: /etc/systemd/system/tomcat-traffic-generator.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start the traffic generator
+  ansible.builtin.systemd:
+    name: tomcat-traffic-generator
+    enabled: true
+    state: started
+
+- name: Create /etc/otelcol-tomcat
+  ansible.builtin.file:
+    path: /etc/otelcol-tomcat
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Separate directory and CertificateRequest name from the platform
+# collector's certificate on the same VM.
+- name: Manage the OTLP mTLS client certificate for this tenant
+  ansible.builtin.import_role:
+    name: otlp_client_cert
+    tasks_from: linux
+  vars:
+    otlp_client_cert_tenant_id: "{{ tenant_id }}"
+    otlp_client_cert_dir: /etc/otelcol-tomcat/tls
+    otlp_client_cert_group: otelcol-contrib
+
+- name: Restart otelcol-tomcat when its certificate or CA changed
+  ansible.builtin.debug:
+    msg: "OTLP client certificate or CA changed - restarting otelcol-tomcat"
+  changed_when: otlp_client_cert_changed | bool
+  when: otlp_client_cert_changed | bool
+  notify: Restart otelcol-tomcat
+
+- name: Deploy the otelcol-tomcat collector config
+  # Reuses the otelcol-contrib binary + system user already installed by
+  # roles/platform-linux - just a second config + systemd unit, not a
+  # second package install.
+  ansible.builtin.template:
+    src: "{{ role_path }}/../../../instrumentation/middleware/tomcat/collector-config.yaml"
+    dest: /etc/otelcol-tomcat/config.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart otelcol-tomcat
+
+- name: Deploy the otelcol-tomcat systemd service
+  ansible.builtin.copy:
+    src: otelcol-tomcat.service
+    dest: /etc/systemd/system/otelcol-tomcat.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart otelcol-tomcat
+
+- name: Allow otelcol-tomcat to read Tomcat's log files
+  # /opt/tomcat is 700 by default (owner-only) - group read on the log
+  # files alone isn't enough, group also needs traversal (+x) on the
+  # directory itself.
+  ansible.builtin.user:
+    name: otelcol-contrib
+    groups: tomcat
+    append: true
+
+- name: Allow group traversal into /opt/tomcat
+  ansible.builtin.file:
+    path: /opt/tomcat
+    state: directory
+    mode: g+x
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start otelcol-tomcat
+  ansible.builtin.systemd:
+    name: otelcol-tomcat
+    enabled: true
+    state: started

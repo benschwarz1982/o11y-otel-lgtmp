@@ -1,0 +1,26 @@
+---
+# NFR-04 mTLS rollout, Phase 1 (README "Open Points") - a second,
+# self-signed ClusterIssuer, entirely separate from letsencrypt-azuredns
+# (cluster-issuer-azuredns.yaml). That one issues public, browser-trusted
+# server certs (Grafana/OpenClaw/Traefik) via ACME; this one is an
+# internal-only trust root for workload identity (per-tenant OTLP client
+# certs, Phase 2 onward) - the two must never be the same CA, since
+# their trust audiences are completely different (the public internet
+# vs. this cluster's own onboarded tenants).
+#
+# secretName references a Kubernetes Secret (kubernetes.io/tls) holding
+# the CA's own cert+key, created by Terraform (tls_private_key +
+# tls_self_signed_cert, terraform/environments/observability-stack-crs/
+# main.tf) - cert-manager's own required pattern for a ClusterIssuer of
+# kind "ca" (as opposed to "acme"), which signs certificates itself
+# rather than requesting them from an external authority. Lives in the
+# cert-manager namespace - cert-manager's own default
+# --cluster-resource-namespace for any ClusterIssuer-referenced secret
+# (this repo doesn't override that flag).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: internal-ca
+spec:
+  ca:
+    secretName: internal-ca-key-pair

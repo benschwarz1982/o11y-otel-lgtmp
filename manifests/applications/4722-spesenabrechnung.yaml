@@ -1,0 +1,14 @@
+---
+system_id: '4722'
+type: application
+name: Spesenabrechnung
+owner:
+  team: Spesenabrechnung Team
+  contact: spesenabrechnung@example.com
+cost_center: CC4722
+dashboard_template: applications/dotnet-vm.template.json
+environments:
+  - env: prod
+    size: S
+platform_refs:
+  - '1229'

@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observability Onboarding</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #1c1f24;
+    --muted: #5b6270;
+    --border: #d8dbe0;
+    --accent: #6b4fbb;
+    --accent-text: #ffffff;
+    --error: #b3261e;
+    --error-bg: #fdecea;
+    --success: #1e6b3a;
+    --success-bg: #e9f7ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d;
+      --card: #1e2127;
+      --text: #e7e9ec;
+      --muted: #9aa1ac;
+      --border: #33373f;
+      --accent: #9a86dd;
+      --accent-text: #16181d;
+      --error: #ff9a92;
+      --error-bg: #3a1f1d;
+      --success: #7fd9a0;
+      --success-bg: #1b3324;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 2rem 1rem 4rem;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  p.lead { color: var(--muted); margin-top: 0; }
+  form {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+  }
+  fieldset {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin: 0 0 1.25rem;
+    padding: 1rem;
+  }
+  legend { padding: 0 0.4rem; color: var(--muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  label { display: block; font-weight: 600; margin-bottom: 0.3rem; }
+  .field { margin-bottom: 1rem; }
+  .field:last-child { margin-bottom: 0; }
+  .hint { color: var(--muted); font-size: 0.82rem; margin-top: 0.25rem; }
+  input[type="text"], input[type="email"], select {
+    width: 100%;
+    padding: 0.55rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  .env-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0;
+  }
+  .env-row select { max-width: 140px; }
+  .env-row label { font-weight: 500; margin: 0; }
+  button {
+    background: var(--accent);
+    color: var(--accent-text);
+    border: none;
+    border-radius: 6px;
+    padding: 0.7rem 1.4rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .message {
+    margin-top: 1.25rem;
+    padding: 0.9rem 1rem;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    display: none;
+  }
+  .message.error { display: block; background: var(--error-bg); color: var(--error); }
+  .message.success { display: block; background: var(--success-bg); color: var(--success); }
+  .message a { color: inherit; font-weight: 600; }
+  code { background: var(--bg); padding: 0.1rem 0.35rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Observability Onboarding</h1>
+  <p class="lead" id="lead-text">
+    Submit your system for onboarding to the Grafana LGTM observability stack.
+    This opens a merge request against
+    <a data-repo-link href="https://gitlab.com/sre1541921/observability-otel-demo" target="_blank" rel="noopener">the platform repo</a>
+    - the observability platform owner still reviews and merges it, nothing is provisioned automatically from this form.
+  </p>
+
+  <div class="env-row" style="margin-bottom: 1rem;">
+    <select id="mode-select" style="max-width: none; width: 100%; font-weight: 600;">
+      <option value="onboard">Onboard a new system</option>
+      <option value="update">Update an existing system</option>
+      <option value="offboard">Offboard an existing system</option>
+    </select>
+  </div>
+
+  <form id="onboard-form" novalidate>
+    <fieldset data-modes="onboard">
+      <legend>System</legend>
+      <div class="field">
+        <label for="system_id">System ID</label>
+        <input type="text" id="system_id" name="system_id" required
+               placeholder="e.g. 4712">
+        <div class="hint">From the architecture inventory tool - not assigned here.</div>
+      </div>
+      <div class="field">
+        <label for="system_type">Type</label>
+        <select id="system_type" name="system_type" required>
+          <option value="application">Application (one specific app)</option>
+          <option value="platform">Platform (a whole fleet, e.g. all Linux hosts)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="system_name">Name</label>
+        <input type="text" id="system_name" name="system_name" required
+               placeholder="e.g. Checkout Service">
+      </div>
+      <div class="field">
+        <label for="dashboard_template">Dashboard Template</label>
+        <select id="dashboard_template" name="dashboard_template" required>
+          <option value="" disabled selected>Choose the shape that matches how this system emits telemetry&hellip;</option>
+          <option value="applications/k8s-app.template.json">Kubernetes pod (generic)</option>
+          <option value="applications/microservices-k8s.template.json">Kubernetes microservices app (request rate/latency from span metrics)</option>
+          <option value="applications/java-k8s.template.json">Kubernetes app + JVM runtime (Java on K8s)</option>
+          <option value="applications/dotnet-vm.template.json">VM-based .NET app</option>
+          <option value="applications/tomcat-vm.template.json">VM-based Java/Tomcat app</option>
+          <option value="platforms/linux-host.template.json">Linux VM (hostmetrics)</option>
+          <option value="platforms/windows-host.template.json">Windows VM (windowsperfcounters)</option>
+          <option value="platforms/network-device.template.json">Network device (SNMP)</option>
+          <option value="platforms/object-storage.template.json">Object storage workload</option>
+          <option value="platforms/platform-container.template.json">Cloud/container platform (the cluster itself)</option>
+          <option value="middleware/postgresql.template.json">PostgreSQL</option>
+        </select>
+        <div class="hint">Picks which panels/metric vocabulary this system's dashboard gets - see the platform repo's README for the full catalog. There's no reliable default, so this is required, not inferred.</div>
+      </div>
+      <div class="field" id="platform_ref_field">
+        <label for="platform_refs">Platform Refs</label>
+        <input type="text" id="platform_refs" name="platform_refs"
+               placeholder="System ID(s) of the platform(s) this app runs on, e.g. 1286, 1295">
+        <div class="hint">Required for applications - one or more platform System IDs, comma-separated (an app can depend on more than one platform at once, e.g. an OS platform and a database platform).</div>
+      </div>
+      <div class="field">
+        <label for="cost_center">Cost Center</label>
+        <input type="text" id="cost_center" name="cost_center" required
+               placeholder="e.g. CC-4021">
+        <div class="hint">For chargeback/showback - fixed at onboarding time, not editable via Update (same as Type/Name).</div>
+      </div>
+    </fieldset>
+
+    <fieldset data-modes="update" hidden>
+      <legend>System</legend>
+      <div class="field">
+        <label for="update_system_id">System ID</label>
+        <input type="text" id="update_system_id" name="update_system_id"
+               placeholder="e.g. 4712">
+        <div class="hint">The System ID of the already-onboarded system to update. Type/name can't be changed here - only owner and environments/budget below.</div>
+      </div>
+    </fieldset>
+
+    <fieldset data-modes="onboard update">
+      <legend>Owner</legend>
+      <div class="field">
+        <label for="owner_team">Team</label>
+        <input type="text" id="owner_team" name="owner_team" required
+               placeholder="e.g. Checkout Team">
+      </div>
+      <div class="field">
+        <label for="owner_contact">Contact</label>
+        <input type="email" id="owner_contact" name="owner_contact" required
+               placeholder="e.g. checkout-team@example.com">
+      </div>
+    </fieldset>
+
+    <fieldset data-modes="onboard update">
+      <legend>Environments &amp; Ingestion Budget</legend>
+      <div class="env-row">
+        <input type="checkbox" id="env_eng" data-env="eng">
+        <label for="env_eng">eng &mdash; 10 days retention</label>
+        <select data-env-size="eng">
+          <option value="S">S &mdash; 1 GB/day</option>
+          <option value="M">M &mdash; 10 GB/day</option>
+          <option value="L">L &mdash; 25 GB/day</option>
+        </select>
+      </div>
+      <div class="env-row">
+        <input type="checkbox" id="env_at" data-env="at">
+        <label for="env_at">at &mdash; 30 days retention</label>
+        <select data-env-size="at">
+          <option value="S">S &mdash; 1 GB/day</option>
+          <option value="M">M &mdash; 10 GB/day</option>
+          <option value="L">L &mdash; 25 GB/day</option>
+        </select>
+      </div>
+      <div class="env-row">
+        <input type="checkbox" id="env_prod" data-env="prod">
+        <label for="env_prod">prod &mdash; 30 days retention</label>
+        <select data-env-size="prod">
+          <option value="S">S &mdash; 1 GB/day</option>
+          <option value="M">M &mdash; 10 GB/day</option>
+          <option value="L">L &mdash; 25 GB/day</option>
+        </select>
+      </div>
+      <div class="hint">Select at least one environment. Budget = retention &times; size, enforced per environment.</div>
+    </fieldset>
+
+    <fieldset data-modes="offboard" hidden>
+      <legend>System</legend>
+      <div class="field">
+        <label for="offboard_system_id">System ID</label>
+        <input type="text" id="offboard_system_id" name="offboard_system_id"
+               placeholder="e.g. 4712">
+        <div class="hint">The System ID to remove from observability onboarding.</div>
+      </div>
+      <div class="field">
+        <label for="offboard_confirm" style="display: flex; align-items: center; gap: 0.5rem; font-weight: 500;">
+          <input type="checkbox" id="offboard_confirm" style="width: auto;">
+          I understand this removes telemetry access for this system.
+        </label>
+      </div>
+    </fieldset>
+
+    <button type="submit" id="submit-btn">Submit onboarding request</button>
+
+    <div class="message" id="message"></div>
+  </form>
+</div>
+
+<script>
+(function () {
+  // No credentials in this page. A request opens GitLab's own "Run
+  // pipeline" page for main with the variables prefilled
+  // (?var[KEY]=value); the requester reviews them and starts the
+  // pipeline as their own, authenticated GitLab user. An embedded
+  // pipeline trigger token used to do this anonymously - but a trigger
+  // token can set ANY variable, including ones the jobs trust (e.g.
+  // CI_API_V4_URL, which would send GITLAB_API_TOKEN to another host).
+  // See README.md#onboarding-process.
+  //
+  // Served from GitHub Pages (<owner>.github.io/<repo>/), the same request
+  // opens a prefilled GitHub issue (.github/ISSUE_TEMPLATE/
+  // self-service-request.yml) instead; .github/workflows/onboarding.yml
+  // turns it into a pull request. Again no credentials here: the
+  // requester submits the issue as their own GitHub user.
+  var GITLAB_REPO_URL = "https://gitlab.com/sre1541921/observability-otel-demo";
+  var ON_GITHUB = /\.github\.io$/.test(location.hostname);
+  var REPO_URL = ON_GITHUB
+    ? "https://github.com/" + location.hostname.split(".")[0] + "/" + location.pathname.split("/")[1]
+    : GITLAB_REPO_URL;
+  var RUN_PIPELINE_URL = GITLAB_REPO_URL + "/-/pipelines/new";
+  var CHANGE_REQUEST = ON_GITHUB ? "pull request" : "merge request";
+  var REPO_LINK = '<a href="' + REPO_URL + '" target="_blank" rel="noopener">the platform repo</a>';
+
+  var form = document.getElementById("onboard-form");
+  var modeSelect = document.getElementById("mode-select");
+  var leadText = document.getElementById("lead-text");
+  var modeFieldsets = document.querySelectorAll("[data-modes]");
+  var typeSelect = document.getElementById("system_type");
+  var platformRefField = document.getElementById("platform_ref_field");
+  var platformRefsInput = document.getElementById("platform_refs");
+  var updateIdInput = document.getElementById("update_system_id");
+  var offboardIdInput = document.getElementById("offboard_system_id");
+  var offboardConfirm = document.getElementById("offboard_confirm");
+  var costCenterInput = document.getElementById("cost_center");
+  var dashboardTemplateSelect = document.getElementById("dashboard_template");
+  var ownerTeamInput = document.getElementById("owner_team");
+  var ownerContactInput = document.getElementById("owner_contact");
+  var messageEl = document.getElementById("message");
+  var submitBtn = document.getElementById("submit-btn");
+
+  document.querySelectorAll("a[data-repo-link]").forEach(function (a) { a.href = REPO_URL; });
+  leadText.innerHTML = leadText.innerHTML.replace("merge request", CHANGE_REQUEST);
+  var LEAD_ONBOARD = leadText.innerHTML;
+  var LEAD_UPDATE =
+    "Request an update to an already-onboarded system's owner and/or " +
+    "environments/ingestion budget (e.g. a T-shirt size change from S to M) " +
+    "- system ID/type/name can't be changed here. This opens a " + CHANGE_REQUEST + " " +
+    "against " + REPO_LINK + " " +
+    "- the observability platform owner still reviews and merges it, nothing is changed automatically from this form.";
+  var LEAD_OFFBOARD =
+    "Request offboarding of a system from the Grafana LGTM observability stack. " +
+    "This opens a " + CHANGE_REQUEST + " against " + REPO_LINK + " " +
+    "that removes its onboarding manifest - the observability platform owner still reviews and merges it, " +
+    "nothing is removed automatically from this form.";
+  var LEAD_BY_MODE = { onboard: LEAD_ONBOARD, update: LEAD_UPDATE, offboard: LEAD_OFFBOARD };
+  var SUBMIT_LABEL_BY_MODE = {
+    onboard: "Submit onboarding request",
+    update: "Submit update request",
+    offboard: "Submit offboarding request"
+  };
+
+  function syncPlatformRef() {
+    var isApp = typeSelect.value === "application";
+    platformRefField.style.display = isApp ? "" : "none";
+    platformRefsInput.required = isApp && modeSelect.value === "onboard";
+  }
+  typeSelect.addEventListener("change", syncPlatformRef);
+
+  function mode() {
+    return modeSelect.value;
+  }
+
+  function syncMode() {
+    var m = mode();
+
+    modeFieldsets.forEach(function (el) {
+      el.hidden = el.dataset.modes.split(" ").indexOf(m) === -1;
+    });
+    leadText.innerHTML = LEAD_BY_MODE[m];
+    submitBtn.textContent = SUBMIT_LABEL_BY_MODE[m];
+
+    // required= only on fields relevant to the active mode, so
+    // reportValidity() below doesn't block on hidden fields.
+    document.getElementById("system_id").required = m === "onboard";
+    document.getElementById("system_name").required = m === "onboard";
+    costCenterInput.required = m === "onboard";
+    dashboardTemplateSelect.required = m === "onboard";
+    ownerTeamInput.required = m === "onboard" || m === "update";
+    ownerContactInput.required = m === "onboard" || m === "update";
+    updateIdInput.required = m === "update";
+    offboardIdInput.required = m === "offboard";
+    syncPlatformRef();
+
+    messageEl.className = "message";
+    messageEl.innerHTML = "";
+  }
+  modeSelect.addEventListener("change", syncMode);
+  syncMode();
+
+  function showMessage(kind, html) {
+    messageEl.className = "message " + kind;
+    messageEl.innerHTML = html;
+  }
+
+  // vars: array of [key, value] pairs.
+  function submitPipeline(vars) {
+    if (ON_GITHUB) {
+      submitIssue(vars);
+      return;
+    }
+    var query = ["ref=main"].concat(vars.map(function (kv) {
+      return "var[" + encodeURIComponent(kv[0]) + "]=" + encodeURIComponent(kv[1]);
+    }));
+    var url = RUN_PIPELINE_URL + "?" + query.join("&");
+    // No "noopener" feature here: with it, window.open() always returns
+    // null, so a blocked popup couldn't be detected. Same effect below.
+    var opened = window.open(url, "_blank");
+    if (opened) { opened.opener = null; }
+    var link = '<a href="' + url.replace(/&/g, "&amp;").replace(/"/g, "&quot;") +
+      '" target="_blank" rel="noopener">open it here</a>';
+    showMessage(
+      "success",
+      (opened ? "GitLab's Run pipeline page opened in a new tab" : "Your browser blocked the new tab - " + link) +
+      ". Check the prefilled variables and click <strong>Run pipeline</strong> (GitLab sign-in required). " +
+      "Once it finishes, a merge request will appear in this repo for the observability platform owner to review."
+    );
+  }
+
+  // GitHub: open the self-service issue form with the request JSON
+  // prefilled; submitting the issue starts .github/workflows/onboarding.yml.
+  function submitIssue(vars) {
+    var request = {};
+    vars.forEach(function (kv) { request[kv[0]] = kv[1]; });
+    var title = "Self-service request: " + vars[0][0].replace(/_/g, " ").toLowerCase() + " " + vars[0][1];
+    var url = REPO_URL + "/issues/new?template=self-service-request.yml" +
+      "&title=" + encodeURIComponent(title) +
+      "&request=" + encodeURIComponent(JSON.stringify(request, null, 2));
+    var opened = window.open(url, "_blank");
+    if (opened) { opened.opener = null; }
+    var link = '<a href="' + url.replace(/&/g, "&amp;").replace(/"/g, "&quot;") +
+      '" target="_blank" rel="noopener">open it here</a>';
+    showMessage(
+      "success",
+      (opened ? "GitHub's new-issue page opened in a new tab" : "Your browser blocked the new tab - " + link) +
+      ". Check the prefilled request and click <strong>Create</strong> (GitHub sign-in required). " +
+      "A workflow then opens a pull request for the observability platform owner to review."
+    );
+  }
+
+  function collectEnvironments() {
+    var environments = [];
+    ["eng", "at", "prod"].forEach(function (env) {
+      var checkbox = document.getElementById("env_" + env);
+      if (checkbox.checked) {
+        var size = document.querySelector('[data-env-size="' + env + '"]').value;
+        environments.push({ env: env, size: size });
+      }
+    });
+    return environments;
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    messageEl.className = "message";
+    messageEl.innerHTML = "";
+
+    if (!form.reportValidity()) {
+      return;
+    }
+
+    var m = mode();
+
+    if (m === "offboard") {
+      if (!offboardConfirm.checked) {
+        showMessage("error", "Please confirm you understand this removes telemetry access for this system.");
+        return;
+      }
+
+      submitPipeline([["OFFBOARDING_SYSTEM_ID", offboardIdInput.value.trim()]]);
+      return;
+    }
+
+    if (m === "update") {
+      var updateEnvironments = collectEnvironments();
+      if (updateEnvironments.length === 0) {
+        showMessage("error", "Select at least one environment.");
+        return;
+      }
+
+      submitPipeline([
+        ["UPDATE_SYSTEM_ID", updateIdInput.value.trim()],
+        ["OWNER_TEAM", ownerTeamInput.value.trim()],
+        ["OWNER_CONTACT", ownerContactInput.value.trim()],
+        ["ENVIRONMENTS_JSON", JSON.stringify(updateEnvironments)]
+      ]);
+      return;
+    }
+
+    var environments = collectEnvironments();
+    if (environments.length === 0) {
+      showMessage("error", "Select at least one environment.");
+      return;
+    }
+
+    var vars = [
+      ["SYSTEM_ID", document.getElementById("system_id").value.trim()],
+      ["SYSTEM_TYPE", typeSelect.value],
+      ["SYSTEM_NAME", document.getElementById("system_name").value.trim()],
+      ["OWNER_TEAM", ownerTeamInput.value.trim()],
+      ["OWNER_CONTACT", ownerContactInput.value.trim()],
+      ["COST_CENTER", costCenterInput.value.trim()],
+      ["DASHBOARD_TEMPLATE", dashboardTemplateSelect.value]
+    ];
+    if (typeSelect.value === "application") {
+      var platformRefs = platformRefsInput.value
+        .split(",")
+        .map(function (s) { return s.trim(); })
+        .filter(function (s) { return s.length > 0; });
+      vars.push(["PLATFORM_REFS_JSON", JSON.stringify(platformRefs)]);
+    }
+    vars.push(["ENVIRONMENTS_JSON", JSON.stringify(environments)]);
+
+    submitPipeline(vars);
+  });
+})();
+</script>
+</body>
+</html>

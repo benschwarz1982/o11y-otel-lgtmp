@@ -1,0 +1,275 @@
+{
+  "title": "__SYSTEM_NAME__",
+  "uid": "system-__SYSTEM_ID__",
+  "tags": ["onboarding", "__SYSTEM_TYPE__"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "custom",
+        "query": "__ENV_OPTIONS__",
+        "current": {},
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      },
+      {
+        "name": "host",
+        "type": "query",
+        "datasource": "__DATASOURCE_MIMIR__",
+        "query": "label_values(Processor_Processor_Time_ratio, host_name)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "description": "Filters every per-host panel below - same fleet-scale reasoning as the Linux Basis dashboard's $host variable."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "System",
+      "type": "text",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 7 },
+      "options": {
+        "mode": "markdown",
+        "content": "**__SYSTEM_NAME__** (`__SYSTEM_ID__`, type `__SYSTEM_TYPE__`)\n\nTenant: `__TENANT_ID__`\n\nOwner: __OWNER_TEAM__ (__OWNER_CONTACT__)\n\n__DEMO_NARRATIVE__"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Configured Ingestion Budget",
+      "type": "text",
+      "gridPos": { "x": 8, "y": 0, "w": 9, "h": 7 },
+      "options": {
+        "mode": "markdown",
+        "content": "__BUDGET_TABLE__\n\nRendered from the manifest at generation time - not a live query. See **Ingestion Budget Usage** alongside for the live percentage."
+      }
+    },
+    {
+      "id": 8,
+      "title": "Ingestion Budget Usage (per Signal)",
+      "description": "This tenant's real ingested volume since local midnight (Europe/Zurich), as a percentage of EACH signal's own daily budget - Metrics (Mimir), Logs (Loki), Traces (Tempo), Profiles (Pyroscope) each shown as its own line. Both values read directly from two gauges scripts/ingestion-midnight-snapshot.py pushes every 2 minutes (demo_ingestion_since_midnight, demo_ingestion_daily_budget) - no subtraction on this panel's own side (NFR-05 SECOND pre-test audit round, fixed here: this used to recompute \"current minus a separately-pushed day-start snapshot\" in this panel's OWN PromQL, independently of - and able to silently disagree with - the enforcer's own decision, with its own version of that script's pre-fix reset-insensitivity; both now read the exact same, already-correct value). Green below 80%, yellow 80-90%, red above 90%. Same formula as the Operator: Tenant Ingestion Budget dashboard's own panel, filtered to this one tenant. Queried via the Mimir-anonymous datasource, not __DATASOURCE_MIMIR__ - see README.md's Multi-Tenancy section for why (self-monitoring metrics land under the anonymous tenant).",
+      "type": "timeseries",
+      "datasource": "Mimir-anonymous",
+      "gridPos": { "x": 17, "y": 0, "w": 7, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 120,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": false,
+          "expr": "100 * demo_ingestion_since_midnight{tenant=~\"__TENANT_ID__\"} / on(tenant, signal) demo_ingestion_daily_budget{tenant=~\"__TENANT_ID__\"}",
+          "legendFormat": "{{signal}}"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Windows Hosts",
+      "description": "No target_info for this tenant (unlike Linux Basis), so this is derived from Processor_Processor_Time_ratio's per-core instance labels instead - one row per host, count = logical CPU cores. See the OS Release pie charts below for release/version.",
+      "type": "table",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 0, "y": 7, "w": 10, "h": 8 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true },
+            "indexByName": {},
+            "renameByName": { "host_name": "Host", "Value": "CPU Cores" }
+          }
+        }
+      ],
+      "targets": [
+        { "refId": "A", "expr": "count by (host_name) (Processor_Processor_Time_ratio{host_name=~\"$host\"})", "format": "table", "instant": true }
+      ]
+    },
+    {
+      "id": 31,
+      "title": "CPU Utilization by Host",
+      "description": "Averaged across logical cores per host.",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 10, "y": 7, "w": 7, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (host_name) (Processor_Processor_Time_ratio{host_name=~\"$host\"})",
+          "legendFormat": "{{host_name}}"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "title": "Available Memory by Host",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 17, "y": 7, "w": 7, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "decmbytes" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "Memory_Available_MBytes_ratio{host_name=~\"$host\"}",
+          "legendFormat": "{{host_name}}"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "title": "OS Release by Major Version",
+      "description": "Lifecycle overview: how many hosts are on which Windows Server release. os_name is already the major-level grouping (e.g. \"Windows Server 2022\") - Windows doesn't have a Linux-style major.minor split, so no regex extraction is needed here unlike linux-host's equivalent panel.",
+      "type": "piechart",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 0, "y": 15, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "count by (os_name) (Processor_Processor_Time_ratio{host_name=~\"$host\", instance=\"0\", os_name!=\"\"})",
+          "legendFormat": "{{os_name}}"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "title": "OS Release by Version",
+      "description": "One level below major version: exact build (e.g. \"Windows Server 2022 Build 20348\") - the closest Windows equivalent of Linux's exact-version pie chart.",
+      "type": "piechart",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 12, "y": 15, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "count by (os_release) (label_join(Processor_Processor_Time_ratio{host_name=~\"$host\", instance=\"0\", os_name!=\"\"}, \"os_release\", \" Build \", \"os_name\", \"os_version\"))",
+          "legendFormat": "{{os_release}}"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "title": "Disk Free Space by Host/Drive",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 0, "y": 23, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "LogicalDisk_Free_Space_ratio{host_name=~\"$host\"}",
+          "legendFormat": "{{host_name}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "title": "Disk I/O by Host/Drive",
+      "description": "Already a per-second rate from the Windows perf counter itself, not a raw counter - no PromQL rate() needed.",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 12, "y": 23, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "LogicalDisk_Disk_Reads_sec_ratio{host_name=~\"$host\"}",
+          "legendFormat": "{{host_name}} {{instance}} reads"
+        },
+        {
+          "refId": "B",
+          "expr": "LogicalDisk_Disk_Writes_sec_ratio{host_name=~\"$host\"}",
+          "legendFormat": "{{host_name}} {{instance}} writes"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "title": "Network Throughput by Host/Interface",
+      "description": "Already a per-second rate from the Windows perf counter itself - no PromQL rate() needed.",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_MIMIR__",
+      "gridPos": { "x": 0, "y": 31, "w": 24, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "Network_Interface_Bytes_Total_sec_ratio{host_name=~\"$host\"}",
+          "legendFormat": "{{host_name}} {{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "title": "Windows Event Log: Error",
+      "description": "Count of Error-level Windows Event Log entries (System/Application channel) over time. This is the signal UC2's own alert (1229 Print Spooler service crashed) watches - see alerting/platforms/1229-windows-basis/alert-rules.yaml, which links back to this exact panel via __panelId__.",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_LOKI__",
+      "gridPos": { "x": 0, "y": 39, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=\"ERROR\" [$__interval])) or vector(0)", "legendFormat": "Error" }
+      ]
+    },
+    {
+      "id": 43,
+      "title": "Windows Event Log: Information",
+      "type": "timeseries",
+      "datasource": "__DATASOURCE_LOKI__",
+      "gridPos": { "x": 12, "y": 39, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=\"INFO\" [$__interval])) or vector(0)", "legendFormat": "Information" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Recent Logs",
+      "description": "Queries by service_name, not k8s_namespace_name - this is a VM, not a Kubernetes pod, so it has no k8s_* labels at all.",
+      "type": "logs",
+      "datasource": "__DATASOURCE_LOKI__",
+      "gridPos": { "x": 0, "y": 46, "w": 24, "h": 8 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [
+        { "refId": "A", "expr": "{service_name=~\".+\"}" }
+      ]
+    }
+  ]
+}

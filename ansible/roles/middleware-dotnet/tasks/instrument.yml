@@ -1,0 +1,211 @@
+---
+# Translates scripts/instrumentation-4722-spesenabrechnung.sh. F03: the
+# app exports to a local relay collector (service otelcol-app,
+# 127.0.0.1:4317), which sends to the Gateway over mTLS with this
+# application's own tenant certificate (role otlp_client_cert) - no
+# client-chosen tenant_id header any more. Separate from the platform
+# collector (otelcol-contrib) on the same VM; same binary.
+#
+# traefik_otlp_ip/pyroscope_internal_ip/tenant_id/service_namespace/
+# deployment_environment/app_owner/app_cost_center/app_size_class are
+# passed in via -e by the instrumentation-4722-spesenabrechnung CI job -
+# see instrumentation/middleware/dotnet/otel.env.template's own header
+# for what each one is (service.name itself is set in-app via
+# ResourceBuilder.AddService(), not here - see
+# app/4722-spesenabrechnung/Program.cs). pyroscope_internal_ip is the
+# one exception, not part of that template - see the Pyroscope tasks
+# below's own comment.
+
+- name: Create C:\pyroscope
+  # win_get_url below does not create its own destination directory -
+  # found live: "The path 'C:\pyroscope' does not exist for
+  # destination... Ensure download destination folder exists (perhaps
+  # using win_file state=directory) before win_get_url runs."
+  ansible.windows.win_file:
+    path: C:\pyroscope
+    state: directory
+
+- name: Download Pyroscope .NET profiler
+  # Continuous profiling (Pyroscope) - see B12 in the main README.
+  # Unlike OTel's .NET SDK wiring (Program.cs, in-code), the Pyroscope
+  # .NET profiler is a native CLR-profiler attach: a standalone signed
+  # DLL downloaded onto the VM, activated purely via the
+  # CORECLR_ENABLE_PROFILING/CORECLR_PROFILER* environment variables
+  # below - no NuGet package, no Program.cs change.
+  #
+  # VERIFY on first real deploy: the release tag/asset naming
+  # convention (github.com/grafana/pyroscope-dotnet/releases) drifts
+  # fast between versions - confirm pyroscope_dotnet_version still
+  # matches the current tag before relying on this.
+  ansible.windows.win_get_url:
+    url: "https://github.com/grafana/pyroscope-dotnet/releases/download/pyroscope-{{ pyroscope_dotnet_version }}/pyroscope.{{ pyroscope_dotnet_version }}-windows-x64.zip"
+    # Versioned zip and directory: the extract step is skipped once its
+    # DLL exists, and the running app holds the loaded DLL open - a new
+    # version goes into its own directory, CORECLR_PROFILER_PATH below
+    # points there and its change restarts the app.
+    dest: "C:\\pyroscope\\pyroscope-{{ pyroscope_dotnet_version }}-windows-x64.zip"
+
+- name: Extract Pyroscope .NET profiler
+  # win_shell + Expand-Archive rather than community.windows.win_unzip -
+  # this CI's .install_ansible_windows only installs ansible.windows
+  # (pinned 3.7.0, see .gitlab-ci.yml's own comment on why Galaxy
+  # collection installs are avoided here), not community.windows. This
+  # matches Grafana's own documented Windows install commands exactly.
+  ansible.windows.win_shell: >
+    Expand-Archive -Path C:\pyroscope\pyroscope-{{ pyroscope_dotnet_version }}-windows-x64.zip
+    -DestinationPath C:\pyroscope\{{ pyroscope_dotnet_version }} -Force
+  args:
+    creates: "C:\\pyroscope\\{{ pyroscope_dotnet_version }}\\Pyroscope.Profiler.Native.dll"
+
+- name: Set OTEL_* machine environment variables
+  ansible.windows.win_environment:
+    state: present
+    level: machine
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+  loop:
+    - name: OTEL_EXPORTER_OTLP_ENDPOINT
+      value: "http://127.0.0.1:4317"
+    - name: OTEL_EXPORTER_OTLP_PROTOCOL
+      value: grpc
+    # instrumentation/schema/core.yaml's Core Schema - picked up automatically by
+    # the .NET SDK's ResourceBuilder.CreateDefault() env-var detector,
+    # no code change needed (see Program.cs).
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: "service.namespace={{ service_namespace }},deployment.environment={{ deployment_environment }},app.owner={{ app_owner }},app.cost_center={{ app_cost_center }},app.size_class={{ app_size_class }}"
+  notify: Restart Spesenabrechnung
+
+- name: Set Pyroscope machine environment variables
+  # CORECLR_* activate the .NET CLR profiler downloaded above - the
+  # GUID identifies which native profiler to load, verified against
+  # Grafana's own docs (grafana.com/docs/pyroscope/latest/configure-client/language-sdks/dotnet/).
+  # A wrong GUID fails this silently (app runs fine, just never
+  # profiles) - the single highest-risk unverified detail in this
+  # feature, confirm against that page again if profiling data doesn't
+  # show up in Pyroscope after deploy.
+  ansible.windows.win_environment:
+    state: present
+    level: machine
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+  loop:
+    - name: CORECLR_ENABLE_PROFILING
+      value: "1"
+    - name: CORECLR_PROFILER
+      value: "{BD1A650D-AC5D-4896-B64F-D6FA25D6B26A}"
+    - name: CORECLR_PROFILER_PATH
+      value: 'C:\pyroscope\{{ pyroscope_dotnet_version }}\Pyroscope.Profiler.Native.dll'
+    - name: PYROSCOPE_PROFILING_ENABLED
+      value: "1"
+    - name: PYROSCOPE_APPLICATION_NAME
+      value: spesenabrechnung
+    - name: PYROSCOPE_SERVER_ADDRESS
+      value: "http://{{ pyroscope_internal_ip }}:4040"
+  notify: Restart Spesenabrechnung
+
+# Previously set machine-wide; the tenant now comes from the mTLS
+# certificate (OTLP) and the Basic-Auth user (Pyroscope ingest proxy).
+- name: Remove client-chosen tenant machine environment variables
+  ansible.windows.win_environment:
+    state: absent
+    level: machine
+    name: "{{ item }}"
+  loop:
+    - OTEL_EXPORTER_OTLP_HEADERS
+    - PYROSCOPE_TENANT_ID
+  notify: Restart Spesenabrechnung
+
+# F03: the Pyroscope ingest proxy authenticates the tenant with Basic
+# Auth (user = tenant_id; password per tenant from terraform/
+# environments/tenants, read with the CI job's kubeconfig). Set as the
+# Spesenabrechnung service's own environment (registry value
+# Services\Spesenabrechnung\Environment), not machine-wide, so other
+# processes don't inherit it.
+- name: Read this tenant's Pyroscope ingest password
+  ansible.builtin.command:
+    cmd: "kubectl get secret pyroscope-ingest-{{ tenant_id }} -n observability -o jsonpath={.data.password}"
+  delegate_to: localhost
+  register: pyroscope_ingest_password
+  changed_when: false
+  no_log: true
+
+- name: Set the Pyroscope ingest credentials on the Spesenabrechnung service
+  ansible.windows.win_regedit:
+    path: HKLM:\SYSTEM\CurrentControlSet\Services\Spesenabrechnung
+    name: Environment
+    type: multistring
+    data:
+      - "PYROSCOPE_BASIC_AUTH_USER={{ tenant_id }}"
+      - "PYROSCOPE_BASIC_AUTH_PASSWORD={{ pyroscope_ingest_password.stdout | b64decode }}"
+  no_log: true
+  notify: Restart Spesenabrechnung
+
+# --- Local OTLP relay (otelcol-app) ---
+# Reuses the otelcol-contrib binary the platform role (platform-windows,
+# deploy-instrumentations:1229-windows-basis) installs on this VM - fail
+# early with a clear message if that hasn't run yet.
+- name: Check that the platform OTel Collector is installed
+  ansible.windows.win_stat:
+    path: C:\Program Files\OpenTelemetry Collector\otelcol-contrib.exe
+  register: otelcol_binary
+
+- name: Require the platform OTel Collector installation
+  ansible.builtin.assert:
+    that: otelcol_binary.stat.exists
+    fail_msg: >-
+      otelcol-contrib.exe not found - run deploy-instrumentations:1229-windows-basis
+      (platform collector) on this VM first.
+
+- name: Create C:\ProgramData\otelcol-app
+  ansible.windows.win_file:
+    path: C:\ProgramData\otelcol-app
+    state: directory
+
+# Separate directory and CertificateRequest name from the platform
+# collector's certificate on the same VM.
+- name: Manage the OTLP mTLS client certificate for this tenant
+  ansible.builtin.import_role:
+    name: otlp_client_cert
+    tasks_from: windows
+  vars:
+    otlp_client_cert_tenant_id: "{{ tenant_id }}"
+    otlp_client_cert_dir: C:\ProgramData\otelcol-app\tls
+
+- name: Restart otelcol-app when its certificate or CA changed
+  ansible.builtin.debug:
+    msg: "OTLP client certificate or CA changed - restarting otelcol-app"
+  changed_when: otlp_client_cert_changed | bool
+  when: otlp_client_cert_changed | bool
+  notify: Restart otelcol-app
+
+- name: Deploy the otelcol-app collector config
+  ansible.windows.win_template:
+    src: "{{ role_path }}/../../../instrumentation/middleware/dotnet/collector-config.yaml"
+    dest: C:\ProgramData\otelcol-app\config.yaml
+  notify: Restart otelcol-app
+
+- name: Validate the otelcol-app collector config
+  ansible.windows.win_shell: |
+    & "C:\Program Files\OpenTelemetry Collector\otelcol-contrib.exe" validate --config "C:\ProgramData\otelcol-app\config.yaml"
+  changed_when: false
+
+# The collector logs to the Windows event log under its service name
+# when run as a service; register that source like the MSI does for the
+# platform collector.
+- name: Register the otelcol-app event log source
+  ansible.windows.win_shell: |
+    if (-not [System.Diagnostics.EventLog]::SourceExists("otelcol-app")) {
+      New-EventLog -LogName Application -Source "otelcol-app"
+      Write-Output "created"
+    }
+  register: otelcol_app_eventlog
+  changed_when: "'created' in otelcol_app_eventlog.stdout"
+
+- name: Create the otelcol-app Windows service
+  ansible.windows.win_service:
+    name: otelcol-app
+    display_name: OpenTelemetry Collector - application relay (4722)
+    path: '"C:\Program Files\OpenTelemetry Collector\otelcol-contrib.exe" --config "C:\ProgramData\otelcol-app\config.yaml"'
+    start_mode: auto
+    state: started
+  notify: Restart otelcol-app

@@ -1,0 +1,168 @@
+---
+# instrumentation/platforms/1229-windows-basis/config.yaml
+#
+# Standard OTel Collector config for every Windows Server VM this
+# platform's fleet ever runs, regardless of what application/middleware
+# ends up deployed on it. Owned by the platform team - identical for
+# every Windows Server Basis VM, nothing to hand-tune per VM beyond the
+# variables below. Application/middleware telemetry is
+# deliberately NOT this file's concern: every app pushes its own OTLP
+# straight to the gateway with its own tenant_id (see
+# instrumentation/middleware/), so this platform template never needs editing
+# when a new app gets deployed onto a Windows VM.
+#
+# This is the single canonical copy - Ansible's `template` module
+# renders it directly (see ansible/roles/platform-windows/tasks/main.yml),
+# no separate mirror lives under ansible/roles/ anymore. Jinja2
+# variables to substitute at deploy time (passed as `-e` on the
+# `deploy-instrumentations:1229-windows-basis` CI job, or supply your
+# own when applying by hand - see README.md in this directory):
+#   {{ traefik_otlp_ip }}     - Traefik's internal LoadBalancer IP for the
+#                              per-tenant mTLS OTLP entrypoint (NFR-04
+#                              Phase 3 - replaces gateway_internal_ip
+#                              for this file)
+#   {{ tenant_id }}           - this VM's own platform tenant (e.g. 1229-prod
+#                              for Windows Server Basis) - NOT an
+#                              application's tenant, this file never
+#                              carries those
+#   {{ deployment_environment }} - this platform's env from its own manifest
+#                              entry, e.g. "prod" (schema/core.yaml) -
+#                              platform-scoped like tenant_id above, not
+#                              an application's own env
+#
+# Installation: https://opentelemetry.io/docs/collector/installation/#windows
+# (otelcol-contrib.exe --config=config.yaml, registered as a Windows
+# service - see ansible/roles/platform-windows/tasks/main.yml for the
+# exact tasks)
+
+receivers:
+  # Windows Performance Counters (CPU, Memory, Disk, Network)
+  windowsperfcounters:
+    collection_interval: 30s
+    metrics:
+      cpu.time:
+        description: Processor time
+      memory.used:
+        description: Memory used
+    perfcounters:
+      - object: Processor
+        instances: "*"
+        counters:
+          - name: "% Processor Time"
+      - object: Memory
+        counters:
+          - name: "Available MBytes"
+      - object: LogicalDisk
+        instances: "*"
+        counters:
+          - name: "% Free Space"
+          - name: "Disk Reads/sec"
+          - name: "Disk Writes/sec"
+      - object: Network Interface
+        instances: "*"
+        counters:
+          - name: "Bytes Total/sec"
+
+  # Windows Event Log (System, Application, Security)
+  windowseventlog:
+    channel: System
+    raw: false
+
+  windowseventlog/application:
+    channel: Application
+    raw: false
+
+processors:
+  batch:
+    send_batch_size: 8192
+    timeout: 5s
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  resource/host:
+    attributes:
+      - key: host.name
+        value: ${env:COMPUTERNAME}
+        action: upsert
+      # service.namespace/service.name, same as the Linux basis: without
+      # them Mimir creates no target_info for this tenant, and the G08
+      # status rule (system:telemetry:present, scripts/generate-rules.py)
+      # reported 1229 as "unknown" forever. No service.instance.id on
+      # purpose - Mimir would turn it into an `instance` label and
+      # overwrite the perf counters' own instance (CPU "0", "1", ...)
+      # that the 1229 dashboard filters on.
+      - key: service.namespace
+        value: windows-agent
+        action: upsert
+      - key: service.name
+        value: windows-host
+        action: upsert
+      - key: os.type
+        value: windows
+        action: upsert
+      # Real OS release/version, for the "OS Release" panels on this
+      # platform's dashboard - the resourcedetection processor's
+      # "system" detector was tried first and doesn't populate this on
+      # Windows (verified live - no os.description-equivalent attribute
+      # appeared); OS_NAME/OS_BUILD are instead set as machine
+      # environment variables from Get-CimInstance Win32_OperatingSystem
+      # at instrumentation time - the same "read it once at setup time,
+      # reference via ${env:...}" pattern as Linux's /etc/os-release,
+      # just sourced from WMI instead since Windows has no
+      # EnvironmentFile equivalent.
+      - key: os.name
+        value: ${env:OS_NAME}
+        action: upsert
+      - key: os.version
+        value: ${env:OS_BUILD}
+        action: upsert
+      # schema/core.yaml's Core Schema - static per this platform
+      # template, doesn't vary per tenant.
+      - key: platform.type
+        value: windows
+        action: upsert
+      - key: deployment.environment
+        value: "{{ deployment_environment }}"
+        action: upsert
+
+exporters:
+  # NFR-04 mTLS rollout, Phase 3 client migration (README "Open
+  # Points") - routed via Traefik's SNI entrypoint straight to this
+  # tenant's own dedicated receiver on the Gateway, presenting the
+  # client cert ansible/roles/platform-windows/tasks/main.yml generates
+  # and gets signed (client.crt/client.key under this install's own
+  # tls\ directory, never transiting the network as a private key - see
+  # ansible/roles/otlp_client_cert). tenant_id is no longer sent as a
+  # client-asserted header - the receiving port itself is what the
+  # Gateway trusts as this tenant's identity. The Gateway's server
+  # certificate is verified against the internal root CA (ca.crt) under
+  # the SNI name below, which the certificate covers via *.otlp.internal
+  # (F08).
+  otlp/host:
+    endpoint: "{{ traefik_otlp_ip }}:14317"
+    tls:
+      cert_file: "C:\\Program Files\\OpenTelemetry Collector\\tls\\client.crt"
+      key_file: "C:\\Program Files\\OpenTelemetry Collector\\tls\\client.key"
+      ca_file: "C:\\Program Files\\OpenTelemetry Collector\\tls\\ca.crt"
+      server_name_override: "{{ tenant_id }}.otlp.internal"
+    # Detect a silently dead connection (e.g. the Azure LB flow is gone
+    # after an AKS node reimage) within ~40 s and reconnect, instead of
+    # retrying into it with DeadlineExceeded until a restart. The
+    # Gateway's tenant receiver permits pings every >= 10 s (see
+    # scripts/provision.py).
+    keepalive:
+      time: 30s
+      timeout: 10s
+      permit_without_stream: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [windowsperfcounters]
+      processors: [memory_limiter, resource/host, batch]
+      exporters: [otlp/host]
+    logs:
+      receivers: [windowseventlog, windowseventlog/application]
+      processors: [memory_limiter, resource/host, batch]
+      exporters: [otlp/host]

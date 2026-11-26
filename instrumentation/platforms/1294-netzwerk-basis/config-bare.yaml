@@ -1,0 +1,55 @@
+---
+# Placeholder collector config for the provisioning step (fleet-1294-netzwerk-basis)
+# - same SNMP receiver as the real collector-config.yaml, but exports to
+# `debug` (logs only) instead of this platform's gateway, so the sidecar
+# container starts and stays healthy without sending any telemetry yet.
+# instrumentation-1294-netzwerk-basis.sh replaces this ConfigMap with
+# the real collector-config.yaml and restarts the deployment to pick
+# it up.
+receivers:
+  snmp:
+    collection_interval: 30s
+    endpoint: udp://127.0.0.1:161
+    version: v2c
+    community: public
+    resource_attributes:
+      interface:
+        oid: "1.3.6.1.2.1.2.2.1.2"  # ifDescr
+    attributes:
+      direction:
+        enum:
+          - in
+          - out
+    metrics:
+      network.io:
+        unit: "By"
+        description: "Bytes transferred per network interface"
+        sum:
+          aggregation: cumulative
+          monotonic: true
+          value_type: int
+        column_oids:
+          - oid: "1.3.6.1.2.1.2.2.1.10"  # ifInOctets
+            resource_attributes: [interface]
+            attributes:
+              - name: direction
+                value: in
+          - oid: "1.3.6.1.2.1.2.2.1.16"  # ifOutOctets
+            resource_attributes: [interface]
+            attributes:
+              - name: direction
+                value: out
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    metrics:
+      receivers: [snmp]
+      processors: [batch]
+      exporters: [debug]

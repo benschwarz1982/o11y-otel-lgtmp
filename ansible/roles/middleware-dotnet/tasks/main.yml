@@ -1,0 +1,17 @@
+---
+# Ansible translation of scripts/fleet-4722-spesenabrechnung.sh /
+# instrumentation-4722-spesenabrechnung.sh. The app's own source files
+# (app/4722-spesenabrechnung/{Spesenabrechnung.csproj,Program.cs})
+# stay in place as the canonical, documented copy - install.yml copies
+# them onto the VM from there directly, not from a duplicate under this
+# role.
+# Two tagged files, not two playbooks - see
+# roles/middleware-tomcat/tasks/main.yml's own comment for why.
+
+- name: Install Spesenabrechnung (no telemetry yet)
+  ansible.builtin.import_tasks: install.yml
+  tags: install
+
+- name: Add OTel instrumentation
+  ansible.builtin.import_tasks: instrument.yml
+  tags: instrument

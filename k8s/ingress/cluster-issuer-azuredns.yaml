@@ -1,0 +1,30 @@
+---
+# Placeholders are Terraform templatefile() syntax, filled in by
+# terraform/environments/observability-stack-crs/main.tf (from the
+# cert_manager_client_id variable and an azurerm_client_config data
+# source) - see that module's README section B4. Deliberately no
+# hardcoded clientID value: this used to be a recurring source of errors
+# when the cert-manager service principal was rotated but this file was
+# not (or no longer) updated manually to match.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-azuredns
+spec:
+  acme:
+    email: deine-email@fs167.ch
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-azuredns-account-key
+    solvers:
+      - dns01:
+          azureDNS:
+            clientID: ${cert_manager_client_id}
+            clientSecretSecretRef:
+              name: azuredns-config
+              key: CLIENT_SECRET
+            subscriptionID: ${azure_subscription_id}
+            tenantID: ${azure_tenant_id}
+            resourceGroupName: ${azure_resource_group}
+            hostedZoneName: sre.fs167.ch
+            environment: AzurePublicCloud

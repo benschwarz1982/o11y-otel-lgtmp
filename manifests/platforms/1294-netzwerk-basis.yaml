@@ -1,0 +1,15 @@
+---
+system_id: '1294'
+type: platform
+name: Netzwerk Basis
+owner:
+  team: Platform Team
+  contact: platformteam@example.com
+cost_center: CC-1294
+environments:
+  - env: prod
+    size: M
+k8s_namespaces:
+  prod:
+    - netzwerk-demo
+dashboard_template: platforms/network-device.template.json

@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Observability Onboarding Manifest",
+  "description": "Schema for onboarding a platform or application onto the observability-otel-demo stack. See ../README.md for the full field reference and process.",
+  "type": "object",
+  "required": ["system_id", "type", "name", "owner", "cost_center", "dashboard_template", "environments"],
+  "additionalProperties": false,
+  "properties": {
+    "system_id": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{3}$",
+      "description": "Unique 4-digit ID (1000-9999) assigned by the architecture inventory tool. Not generated here - looked up/copied from that system of record. Must be numeric: it derives the tenant's mTLS receiver port (scripts/provision.py, tenant_grpc_port())."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["platform", "application"],
+      "description": "'platform' = fleet-wide view (e.g. all Linux hosts). 'application' = a single app, optionally running on a platform."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable name, e.g. 'Linux Basis' or 'Tomcat Web App'."
+    },
+    "owner": {
+      "type": "object",
+      "required": ["team", "contact"],
+      "additionalProperties": false,
+      "properties": {
+        "team": { "type": "string", "minLength": 1 },
+        "contact": { "type": "string", "format": "email", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$" }
+      }
+    },
+    "cost_center": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Kostenstelle for chargeback/showback - exposed on telemetry as the app.cost_center resource attribute (see schema/core-v1.yaml)."
+    },
+    "platform_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "system_id(s) of the underlying platform(s) this application runs on (applications only) - a list because an application can depend on more than one platform at once, e.g. an OS platform, a middleware/runtime platform, and a database platform."
+    },
+    "environments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["env", "size"],
+        "additionalProperties": false,
+        "properties": {
+          "env": { "type": "string", "enum": ["eng", "at", "prod"] },
+          "size": { "type": "string", "enum": ["S", "M", "L"] }
+        }
+      },
+      "description": "One entry per environment this system runs in (each env at most once). Retention is derived from env (eng=10d, at/prod=30d), ingestion budget = retention x size (S=1GB/M=10GB/L=25GB per day)."
+    },
+    "k8s_namespaces": {
+      "type": "object",
+      "propertyNames": { "enum": ["eng", "at", "prod"] },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$",
+          "not": { "enum": ["calico-system", "cert-manager", "default", "ingress-traefik", "kube-node-lease", "kube-public", "kube-system", "linkerd", "linkerd-viz", "observability", "openclaw", "opentelemetry-operator-system", "tigera-operator"] }
+        }
+      },
+      "description": "Optional, per environment: the AKS namespaces whose workloads send this system's telemetry. The OTel Gateway derives the tenant from the sending pod's namespace for these and ignores any client-set tenant_id. A namespace belongs to at most one tenant; the cluster's platform namespaces (scripts/provision.py AGENT_PLATFORM_NAMESPACES, e.g. 'observability', 'kube-system') are reserved. Container logs from a namespace no manifest claims are dropped. Kept outside 'environments' because a self-service update replaces that list."
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "regex"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,30}$" },
+              "regex": { "type": "string", "minLength": 3 }
+            }
+          }
+        }
+      },
+      "description": "Optional (G02/FR-05): system-specific masking rules, on top of the platform-wide catalog (scripts/provision.py REDACTION_BASE: e-mail, IBAN, AHV number, credit card, bearer token, credentials in URLs, password/token assignments). The OTel Gateway replaces every match of regex (RE2 syntax) in this system's log bodies, log and span attributes with <redacted:NAME>, before storage."
+    },
+    "dashboard_template": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Subfolder-qualified filename of the dashboard template in the platform repo's dashboards/templates/ this system's dashboard should be generated from (e.g. 'platforms/linux-host.template.json') - picked based on how the system actually emits telemetry (Kubernetes pod, Linux VM, Windows VM, SNMP device, JVM runtime, database, ...), see that repo's README for the full catalog. Required, not inferred - there's no reliable signal in this manifest's other fields to guess telemetry shape from, and leaving it optional (silently defaulting to 'applications/k8s-app.template.json') meant systems onboarded without a human catching it during review got the wrong dashboard shape. If genuinely generic Kubernetes-pod telemetry is right for this system, set it explicitly to 'applications/k8s-app.template.json' rather than omitting the field."
+    },
+    "demo_narrative": {
+      "type": "string",
+      "description": "Optional markdown blurb shown on this system's dashboard tying it to a Demo Use Case (see this README's Demo Use Cases table) and linking the platform dashboards it depends on, e.g. '[1286-Linux Basis](/d/system-1286-prod)'. Only set for systems that are part of a live-demo narrative - most platforms/applications don't need this."
+    }
+  },
+  "if": {
+    "properties": { "type": { "const": "application" } }
+  },
+  "then": {
+    "required": ["platform_refs"]
+  }
+}

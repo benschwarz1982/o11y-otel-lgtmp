@@ -1,0 +1,31 @@
+---
+name: Security scans
+
+# Weekly: new CVEs show up without any change in this repository.
+# pip-audit over the pinned CI requirements, trivy over the CI images.
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  python-deps:
+    name: Python dependencies (pip-audit)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container: python:3.15.2-slim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/scripts/pip-audit.sh
+
+  images:
+    name: CI images
+    uses: ./.github/workflows/image-scan.yml
+    permissions:
+      contents: read
+      packages: read

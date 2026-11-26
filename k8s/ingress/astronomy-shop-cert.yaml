@@ -1,0 +1,13 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: astronomy-shop-tls-cert
+  namespace: astronomy-shop
+spec:
+  secretName: astronomy-shop-tls-secret
+  issuerRef:
+    name: letsencrypt-azuredns
+    kind: ClusterIssuer
+  dnsNames:
+    - astronomy-shop.sre.fs167.ch

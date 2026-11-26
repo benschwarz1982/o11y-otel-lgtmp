@@ -1,0 +1,126 @@
+---
+# Pyroscope - microservices (distributed) mode, minimal for demo on
+# AKS, matching Loki/Tempo/Mimir's own distributed-mode convention
+# (see B12 in the main README for the full picture, including why
+# profiles don't flow through the OTel gateway the way traces/metrics/
+# logs do).
+#
+# Every key below was verified directly against the chart (`helm show
+# values grafana/pyroscope` + `helm template`, chart version 2.2.1) -
+# an earlier pass of this file used a plausible-looking but wrong key
+# for both of the two settings that matter most (microservices.enabled
+# and a pyroscopeConfig: wrapper for storage) - Helm silently accepts
+# unknown top-level keys instead of rejecting them, so the first real
+# deploy looked like it succeeded while actually running single-binary
+# mode with no S3 storage configured at all. See README.md's Known
+# Pitfalls for the full story.
+#
+# multitenancy_enabled below (default: false, confirmed via Grafana's
+# own docs) is required - an earlier version of this comment claimed
+# Pyroscope needs no explicit enable flag "the same way Mimir is",
+# which was wrong. Found live during the post-e2e backend-acceptance
+# check: with the flag unset, Pyroscope silently ignores the
+# X-Scope-OrgID header (since F03 set by the Pyroscope ingest proxy from
+# the authenticated tenant, terraform/environments/observability-stack)
+# and stores everything under the single tenant
+# "anonymous" - confirmed via the distributor's own
+# pyroscope_distributor_push_batch_series_sum{tenant=...} metric, which
+# showed 413 real profile pushes (JFR, i.e. 4711-mitarbeiterverzeichnis's
+# Java agent) all landing under "anonymous" regardless of tenant ID.
+# Mimir is the one LGTM+P backend that genuinely needs no flag here -
+# unlike Loki/Tempo/Pyroscope, its default is multi-tenant-on. Pyroscope
+# behaves like Loki (auth_enabled: true) and Tempo
+# (tempo.structuredConfig.multitenancy_enabled: true), not like Mimir.
+# Per-tenant ingestion overrides (tenantOverrides) are deliberately not
+# configured - Tempo has no equivalent override file in this repo
+# either, so Pyroscope follows that same "no override file" precedent
+# rather than Mimir/Loki's.
+architecture:
+  microservices:
+    enabled: true
+    # v2 is this chart's default storage architecture (architecture.
+    # storage.v2: true) - the v1 knobs alongside these in the chart's
+    # own values.yaml are for the older ingester/querier split, not
+    # what's actually running here. One replica per component,
+    # matching Tempo/Mimir/Loki's own "replicas: 1" demo footprint -
+    # the chart's own defaults (2-3 per component across 9 components)
+    # are sized for production scale and would add 15+ pods on a
+    # cluster that's already hit a real capacity limit once before
+    # (see Known Pitfalls: "Cluster capacity wasn't enough for the
+    # LGTM stack + collectors + the full Astronomy Shop demo").
+    v2:
+      distributor:
+        replicaCount: 1
+      query-frontend:
+        replicaCount: 1
+      query-backend:
+        replicaCount: 1
+      segment-writer:
+        replicaCount: 1
+      compaction-worker:
+        replicaCount: 1
+      metastore:
+        replicaCount: 1
+        # metastore uses Raft consensus and expects exactly this many
+        # peers to bootstrap - the chart's own default (3, matching
+        # its default 3 metastore replicas) never becomes healthy with
+        # only 1 replica actually running unless this is lowered too.
+        extraArgs:
+          metastore.raft.bootstrap-expect-peers: 1
+
+# This chart bundles Grafana Alloy by default (a profiling-annotation-
+# based auto-scrape agent, `profiles.grafana.com/*.scrape` on other
+# pods) - not part of this repo's design, which has each app's own
+# Pyroscope client agent push directly to the distributor instead (see
+# B12 in the main README) - disabled to avoid a redundant, unused
+# StatefulSet.
+alloy:
+  enabled: false
+
+# This chart can bundle its own MinIO sub-chart (defaults to disabled
+# already, kept explicit) - Pyroscope uses Azure Blob Storage instead
+# (see the storage block below), same as every other backend in this repo.
+minio:
+  enabled: false
+
+# structuredConfig, not a bare top-level key - deep-merges into the
+# chart's rendered /etc/pyroscope/config.yaml (confirmed via `helm
+# template`: renders exactly this storage stanza into the pyroscope-
+# config ConfigMap). Key names here (bucket_name/access_key_id/
+# secret_access_key) are Pyroscope's own - differ from Tempo's
+# storage.trace.s3.{bucket,access_key,secret_key} naming, each chart
+# has its own conventions.
+pyroscope:
+  # F24/NFR-03: unlike Loki/Tempo/Mimir, this chart has no option to keep
+  # its rendered config in a Secret. So the config only holds a
+  # ${AZURE_STORAGE_ACCOUNT_KEY} placeholder (account_key below, set by
+  # Terraform), which Pyroscope expands at startup (-config.expand-env)
+  # from the Terraform-managed Secret pyroscope-storage. The config has
+  # no other "$" that expansion could touch.
+  extraArgs:
+    config.expand-env: "true"
+  extraEnvFrom:
+    - secretRef:
+        name: pyroscope-storage
+  structuredConfig:
+    # Root-level key, not nested under an "auth" block - the CLI-flag
+    # form (--auth.multitenancy-enabled) uses that namespace, but the
+    # config-file key itself is flat, confirmed against Grafana's own
+    # configuration-parameters reference.
+    multitenancy_enabled: true
+    # F14: retention for any tenant without a per-tenant override
+    # (offboarded tenants' residual data) - Pyroscope's own default is
+    # 31d; 10 days = the shortest retention the self-service promises.
+    limits:
+      retention_period: 240h
+    # account_name/account_key are injected via Terraform set/set_sensitive
+    # (terraform/environments/observability-stack/main.tf's own
+    # helm_release.pyroscope) - never written here. No federated-token
+    # option here: Pyroscope's own configuration-parameters reference
+    # doesn't document an equivalent field for its azure storage backend
+    # (unlike Tempo/Loki) - same reasoning as mimir-values.yaml's own
+    # comment on this.
+    storage:
+      backend: azure
+      azure:
+        container_name: pyroscope-data

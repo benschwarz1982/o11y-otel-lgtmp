@@ -1,0 +1,15 @@
+---
+system_id: '4015'
+type: platform
+name: Filestorage
+owner:
+  team: Platform Engineering
+  contact: platform-team@example.com
+cost_center: CC-4015
+dashboard_template: platforms/object-storage.template.json
+environments:
+  - env: prod
+    size: S
+k8s_namespaces:
+  prod:
+    - filestorage-demo

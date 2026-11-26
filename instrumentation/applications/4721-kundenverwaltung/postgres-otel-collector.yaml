@@ -1,0 +1,53 @@
+---
+# Dedicated small collector for PostgreSQL metrics - uses the native
+# postgresql receiver (talks the Postgres wire protocol directly, no
+# exporter/scrape-target setup needed on the DB side) and tags
+# everything under 4721's own tenant (Kundenverwaltung, this database's
+# sole and permanent consumer - see README.md's Multi-Tenancy
+# "Middleware/runtime tenants" note for why this doesn't get its own
+# platform tenant).
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: postgres-otel-collector
+  namespace: kundenverwaltung
+spec:
+  mode: deployment
+  replicas: 1
+  image: otel/opentelemetry-collector-contrib:0.166.0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  envFrom:
+    - secretRef:
+        name: postgres-credentials
+  config:
+    receivers:
+      postgresql:
+        endpoint: postgres.kundenverwaltung.svc.cluster.local:5432
+        transport: tcp
+        username: ${env:POSTGRES_USER}
+        password: ${env:POSTGRES_PASSWORD}
+        databases:
+          - ${env:POSTGRES_DB}
+        collection_interval: 30s
+        tls:
+          insecure: true
+    processors:
+      batch: {}
+    exporters:
+      otlphttp:
+        endpoint: http://otel-gateway-collector.observability.svc.cluster.local:4318
+        tls:
+          insecure: true
+        headers:
+          tenant_id: "4721-prod"
+    service:
+      pipelines:
+        metrics:
+          receivers: [postgresql]
+          processors: [batch]
+          exporters: [otlphttp]

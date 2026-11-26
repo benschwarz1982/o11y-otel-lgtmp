@@ -1,0 +1,14 @@
+---
+# Inputs (set by the caller via import_role vars):
+#   otlp_client_cert_tenant_id - tenant whose Issuer signs the certificate, e.g. 1286-prod
+#   otlp_client_cert_dir       - directory on the VM for client.key/client.crt/ca.crt
+#   otlp_client_cert_group     - Linux only: group the collector service runs as
+# Output: fact otlp_client_cert_changed (bool) - the caller restarts its
+# collector when true.
+
+# Certificates are requested for 90 days and renewed once fewer than 30
+# remain (F11) - checked on every deploy-instrumentations run (demo: no
+# scheduled renewal, rerun the job when a certificate gets close).
+otlp_client_cert_duration: 2160h
+otlp_client_cert_renew_before_seconds: 2592000
+otlp_client_cert_group: otelcol-contrib

@@ -1,0 +1,172 @@
+---
+# UC2 - Windows Service Crash. Rules only - see alerting/README.md.
+# Requires 1229 to actually be onboarded (datasourceUid
+# loki-1229-prod must resolve). Grafana folder is 1229 - same folder
+# its own dashboard lives in, see alerting/README.md.
+#
+# Replaces the earlier UC2 (4721 Kundenverwaltung, Postgres connection
+# usage) - found live that use case read too similarly to UC1 (also a
+# platform, also metrics-only). This one is deliberately a Logs signal
+# instead: demo:uc2-break starts a detached loop on vm-windows-demo
+# that kills the Print Spooler service's process every 30s, for as
+# long as the loop runs - see that job's own comment for why a single
+# kill wasn't enough (self-heals in ~5s via this VM's default restart
+# recovery policy, and only ever logs one pair of Error events, so the
+# alert cleared on its own after its lookback window passed regardless
+# of whether demo:uc2-fix ever ran). The repeated kills keep Service
+# Control Manager logging real System-log Error events (7031 "service
+# terminated unexpectedly") for as long as the underlying problem (the
+# loop) actually persists - confirmed live over several 30s cycles -
+# so this alert tracks genuine ongoing state, not a one-off burst.
+# Confirmed live: the resulting log lines land in Loki with
+# detected_level="ERROR" (OTel severity text, not Windows' own "Error"
+# spelling) via the windowseventlog receiver's own severity mapping.
+#
+# relativeTimeRange 60s (not this repo's usual 600s) - tuned for demo
+# pacing after finding the default made demo:uc2-fix -> alert-clears
+# take 5-6 minutes (loop's own 30s worst-case gap + the window itself +
+# up to 1m for the next 1m-interval evaluation to notice). 60s brings
+# that down to roughly 2 minutes total, without needing to touch the
+# loop's own 30s kill interval or this rule's evaluation interval.
+#
+# `or vector(0)` on the query - LogQL's count_over_time returns no
+# series at all when zero lines match, so without it this rule reads
+# NoData at rest. The flip side: with it, a host that stops shipping
+# logs altogether ALSO reads 0 / Normal - this rule alone can't tell
+# "no crashes" from "no telemetry". Its own query can't either: this
+# host's event logs are sporadic (found live: under a third of all 5m
+# windows over 48h had any log line), so a logs-based "still alive"
+# check would flap. That's what the second rule below is for - it
+# watches this host's continuous perf-counter metrics instead.
+#
+# Only Service Control Manager event 7031 ("service terminated
+# unexpectedly") for the Print Spooler counts - found live: this host
+# logs unrelated ERROR events too (Schannel 36874 TLS errors, 19 in 24h,
+# plus others), and the earlier detected_level="ERROR"-only query
+# turned each of them into a "Print Spooler crashed" alert, routed to
+# OpenClaw.
+#
+# count_over_time([1m]), not [$__interval] - found live this rule
+# stayed stuck on Normal through an entire real break (9 confirmed
+# Error log lines, 30s apart, over 10+ minutes) despite the raw LogQL
+# query itself correctly returning nonzero when run directly against
+# Loki. Root cause: this rule's saved model carries an explicit
+# intervalMs: 1000 (1 second, likely a leftover from whatever produced
+# this file's JSON, unrelated to the 60s relativeTimeRange above it) -
+# $__interval substitutes to that 1s value, so count_over_time only
+# ever counted errors within the single last second of each evaluation
+# point. With crashes 30s apart, that 1-second slice is empty almost
+# every time, and the reduce stage's `last` value reads 0 far more
+# often than not. A fixed 1m window sidesteps intervalMs entirely,
+# same fix already applied elsewhere in this repo for equivalent
+# $__interval/$__rate_interval surprises.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: 1229-windows-server-basis
+    folder: "1229"
+    interval: 1m
+    rules:
+      - uid: alert-1229-spooler-crashed
+        title: "1229 Windows Server Basis - Print Spooler service crashed"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 60, to: 0}
+            datasourceUid: loki-1229-prod
+            model:
+              expr: sum(count_over_time({service_name=~".+"} | detected_level="ERROR" |= "Print Spooler" | json event_id_id="event_id.id" | event_id_id="7031" [1m])) or vector(0)
+              instant: false
+              range: true
+              refId: A
+          # reduce stage - see 1286's alert-rules.yaml for why this is
+          # required (found live, missing on every rule in this repo).
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        # host_name/runbook_key: consumed by alerting/shared/
+        # openclaw-webhook.yaml's notification template (same wiring
+        # as 1286's own alert-rules.yaml) - static labels here since,
+        # unlike 1286's query, this one doesn't group by host_name
+        # itself (a single Loki stream for this one Windows host, no
+        # per-host dimension to group by). Deliberately routed to the
+        # same "openclaw" contact point as 1286 but with NO matching
+        # file under /sre/runbooks/ - this is this repo's human-in-
+        # the-loop demo counterpart to 1286's full autoremediation:
+        # AGENTS.md's own documented fallback ("If NO matching runbook
+        # exists: analyze independently, propose options, wait for
+        # confirmation") is exercised for real here rather than left
+        # as an untested code path.
+        labels:
+          host_name: vm-windows-demo
+          runbook_key: 1229-windows-server-basis-spoolercrash
+        annotations:
+          summary: "UC2 - Windows Server Basis (1229) Print Spooler service crashed"
+          description: "The Print Spooler service on tenant 1229 (Windows Server Basis, Demo Use Case 2: Windows Service Crash) is crashing repeatedly - Windows Event Log Error-level entries present for at least 1 minute."
+          # Links this rule to its own system dashboard + the specific
+          # panel it's about - see 1286's alert-rules.yaml for why this
+          # is required (found live, missing on every rule in this
+          # repo). Panel 41 is the "Windows Event Log: Error" timeseries
+          # on windows-host.template.json, added specifically for this
+          # Use Case.
+          __dashboardUid__: "system-1229"
+          __panelId__: "41"
+
+      # Companion to the rule above (F12): fires when this host stops
+      # sending telemetry, the one situation the crash rule can't see
+      # (its `or vector(0)` reads that as "no crashes"). Uses the host's
+      # perf counters, not its logs - they arrive every 30s (found live:
+      # 569 of 577 5m windows over 48h, the only gap a VM rebuild),
+      # while event logs are sporadic. Not routed to OpenClaw - the
+      # notification policy matches alert names exactly.
+      - uid: alert-1229-telemetry-missing
+        title: "1229 Windows Server Basis - host telemetry missing"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: mimir-1229-prod
+            model:
+              expr: count(count_over_time(Processor_Processor_Time_ratio[10m])) or vector(0)
+              instant: true
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+              refId: C
+        # NoData/Error here means Mimir itself didn't answer - just as
+        # blind as missing telemetry, so it fires too.
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        labels: {}
+        annotations:
+          summary: "Windows Server Basis (1229) host telemetry missing"
+          description: "No perf-counter metrics from tenant 1229 for 10 minutes - host down or telemetry pipeline broken. The Print Spooler crash alert can't detect anything meanwhile."

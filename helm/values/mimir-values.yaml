@@ -1,0 +1,126 @@
+---
+# Mimir - Distributed Mode, minimal for demo on AKS
+# F24/NFR-03: the rendered config embeds the Azure storage account
+# key - kept in a Secret instead of the chart's default ConfigMap
+# (readable by anyone allowed to read ConfigMaps in this namespace).
+configStorageType: Secret
+
+# Mimir 3.2.6: the newest chart (6.2.2) still ships 3.2.3 as appVersion -
+# patch release pinned here until a chart with it exists.
+image:
+  tag: 3.2.6
+
+# The chart's gateway still defaults to nginxinc/nginx-unprivileged,
+# which is no longer updated - same image as pyroscope_ingest_proxy.
+gateway:
+  nginx:
+    image:
+      repository: nginx/nginx-unprivileged
+      tag: 1.31.10-alpine
+
+# Budget enforcement for the onboarding process (see
+# observability-otel-demo-onboarding repo's "Multi-Tenancy" section) -
+# per-tenant limits computed from that tenant's manifest via
+# scripts/calculate-ingestion-budget.py. Empty here on purpose (IaC
+# Roadmap milestone, done: 4087 used to get a static entry baked in at
+# this deploy:observability-stack scope, existing before any onboarding
+# happened - now it goes through the same onboarding-repo request/
+# approval flow as every other tenant, its entry lives in
+# mimir-tenant-overrides.yaml like everyone else's, applied by
+# deploy:tenants). `runtimeConfig` stays declared (even empty) so the
+# `helm upgrade --reuse-values -f mimir-tenant-overrides.yaml` step has
+# a `runtimeConfig.overrides` path to deep-merge into.
+runtimeConfig:
+  overrides: {}
+mimir:
+  structuredConfig:
+    limits:
+      max_global_series_per_user: 0   # unlimited for demo
+      ingestion_rate: 100000
+      # Default 30 rejected real series from the Astronomy Shop Demo
+      # (system_id 4720) - its Node.js/multi-language services combined
+      # with k8s/cloud resourcedetection routinely produce 36 labels per
+      # series (err-mimir-max-label-names-per-series). Raised generously
+      # for demo purposes, same spirit as max_global_series_per_user above.
+      max_label_names_per_series: 60
+      # F14: retention for any tenant WITHOUT a per-tenant override -
+      # offboarded tenants' residual data and "anonymous". Mimir's own
+      # default is 0 (keep forever); 10 days = the shortest retention the
+      # self-service promises (eng). Onboarded tenants get theirs from
+      # mimir-tenant-overrides.yaml (scripts/provision.py).
+      compactor_blocks_retention_period: 240h
+    # account_name/account_key are injected via Terraform set/set_sensitive
+    # (terraform/environments/observability-stack/main.tf's own
+    # helm_release.mimir) - never written here. No federated-token option:
+    # Mimir's Azure Blob client doesn't support Workload Identity (a
+    # documented, open limitation - grafana/mimir#5505, #7447), unlike
+    # Tempo (see tempo-values.yaml).
+    blocks_storage:
+      backend: azure
+      azure:
+        container_name: mimir-blocks
+    # G03/G04/G08: per-tenant recording and alerting rules (SLOs from
+    # Sloth, baselines, status model) live in the Mimir ruler, loaded by
+    # scripts/sync-mimir-rules.py in tenants:rollout from rules/<tenant>/.
+    # Own container, so rules never mix with TSDB blocks.
+    ruler_storage:
+      backend: azure
+      azure:
+        container_name: mimir-ruler
+    ruler:
+      # No Mimir Alertmanager in this demo (alertmanager.enabled: false
+      # below): ruler alerts are evaluated and visible in Grafana's
+      # Alerting page as data-source-managed rules, but not delivered -
+      # same as every Grafana-managed rule without a contact point.
+      # The chart's default URL points at the disabled Alertmanager and
+      # would log a send error per alert.
+      alertmanager_url: ""
+      # G08: the business-service status group in tenant "anonymous"
+      # reads the per-system status of several tenants (source_tenants).
+      tenant_federation:
+        enabled: true
+    tenant_federation:
+      enabled: true
+    common:
+      storage:
+        backend: azure
+        azure: {}
+
+# Minimal replicas per microservice (instead of HA defaults with 3x)
+distributor:
+  replicas: 1
+ingester:
+  replicas: 1
+  persistentVolume:
+    size: 10Gi
+querier:
+  replicas: 1
+query_frontend:
+  replicas: 1
+query_scheduler:
+  replicas: 1
+store_gateway:
+  replicas: 1
+  persistentVolume:
+    size: 5Gi
+compactor:
+  replicas: 1
+  persistentVolume:
+    size: 5Gi
+ruler:
+  replicas: 1     # G03/G04/G08 rules - see ruler_storage above
+alertmanager:
+  enabled: false  # see ruler.alertmanager_url above
+# Exports currently-configured per-tenant limits (from runtimeConfig
+# above) as the cortex_limits_overrides Prometheus metric - lets a
+# system's own dashboard show its real, live ingestion budget instead of
+# a value hardcoded into the dashboard at generation time that would go
+# stale on the next resize (see onboarding roadmap step 3).
+overrides_exporter:
+  replicas: 1
+
+# The mimir-distributed chart bundles its OWN MinIO subchart dependency,
+# defaulting to enabled: true - unrelated to (and would otherwise
+# duplicate) this repo's own Azure Blob Storage migration above.
+minio:
+  enabled: false

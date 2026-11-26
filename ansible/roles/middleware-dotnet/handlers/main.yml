@@ -1,0 +1,10 @@
+---
+- name: Restart Spesenabrechnung
+  ansible.windows.win_service:
+    name: Spesenabrechnung
+    state: restarted
+
+- name: Restart otelcol-app
+  ansible.windows.win_service:
+    name: otelcol-app
+    state: restarted
