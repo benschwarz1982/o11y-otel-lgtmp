@@ -1,5 +1,6 @@
 ---
 name: Demo
+run-name: "Demo ${{ inputs.scenario }}"
 
 # Break and fix the four demo use cases (README "Demo"): each "break"
 # makes an alert fire (and OpenClaw react), "fix" restores the system.
@@ -25,6 +26,7 @@ jobs:
   run:
     name: ${{ inputs.scenario }}
     runs-on: [self-hosted, linux, otel-demo]
+    timeout-minutes: 30
     environment: demo
     permissions:
       contents: read

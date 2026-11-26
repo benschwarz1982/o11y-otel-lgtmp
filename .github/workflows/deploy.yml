@@ -1,5 +1,6 @@
 ---
 name: Deploy
+run-name: "Deploy ${{ inputs.scope }}${{ inputs.plan_only && ' (plan only)' || '' }}${{ inputs.systems != 'all' && format(' - {0}', inputs.systems) || '' }}"
 
 # Manual only: starting this workflow is the operator's decision (the
 # GitLab pipeline's manual deploy buttons). "everything" rebuilds the
@@ -58,8 +59,9 @@ env:
 
 jobs:
   setup:
-    name: Plan the run
+    name: Plan run
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
@@ -129,10 +131,11 @@ jobs:
           fi
 
   infra:
-    name: Infra (AKS + network)
+    name: 1 Infra (AKS + network)
     needs: setup
     if: needs.setup.outputs.infra == 'true'
     runs-on: &runner [self-hosted, linux, otel-demo]
+    timeout-minutes: 60
     environment: &environment demo
     permissions: &permissions
       contents: read
@@ -156,10 +159,11 @@ jobs:
         run: ci/scripts/cleanup.sh
 
   observability-stack:
-    name: Observability stack
+    name: 2 Observability stack
     needs: [setup, infra]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.stack == 'true' }}
     runs-on: *runner
+    timeout-minutes: 90
     environment: *environment
     permissions: *permissions
     container: *terraform-container
@@ -177,10 +181,11 @@ jobs:
       - *cleanup
 
   tenants:
-    name: Tenants rollout
+    name: 3 Tenants
     needs: [setup, observability-stack]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.tenants == 'true' }}
     runs-on: *runner
+    timeout-minutes: 45
     environment: *environment
     permissions: *permissions
     container: *terraform-container
@@ -197,7 +202,7 @@ jobs:
       - *cleanup
 
   fleets-platform:
-    name: Fleet ${{ matrix.system }}
+    name: 4 Fleet ${{ matrix.system }}
     needs: [setup, tenants]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.fleets_platform != '[]' }}
     strategy:
@@ -205,6 +210,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.fleets_platform) }}
     runs-on: *runner
+    timeout-minutes: 60
     environment: *environment
     permissions: *permissions
     container: &matrix-container
@@ -222,7 +228,7 @@ jobs:
       - *cleanup
 
   fleets-apps:
-    name: Fleet ${{ matrix.system }}
+    name: 5 Fleet ${{ matrix.system }}
     needs: [setup, fleets-platform]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.fleets_apps != '[]' }}
     strategy:
@@ -230,6 +236,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.fleets_apps) }}
     runs-on: *runner
+    timeout-minutes: 60
     environment: *environment
     permissions: *permissions
     container: *matrix-container
@@ -243,7 +250,7 @@ jobs:
       - *cleanup
 
   instrument-platform:
-    name: Instrument ${{ matrix.system }}
+    name: 6 Instrument ${{ matrix.system }}
     needs: [setup, fleets-apps]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.instr_platform != '[]' }}
     strategy:
@@ -251,6 +258,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.instr_platform) }}
     runs-on: *runner
+    timeout-minutes: 60
     environment: *environment
     permissions: *permissions
     container: *matrix-container
@@ -264,7 +272,7 @@ jobs:
       - *cleanup
 
   instrument-apps:
-    name: Instrument ${{ matrix.system }}
+    name: 7 Instrument ${{ matrix.system }}
     needs: [setup, instrument-platform]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.instr_apps != '[]' }}
     strategy:
@@ -272,6 +280,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.instr_apps) }}
     runs-on: *runner
+    timeout-minutes: 60
     environment: *environment
     permissions: *permissions
     container: *matrix-container
@@ -285,10 +294,11 @@ jobs:
       - *cleanup
 
   aiops:
-    name: AIOps (OpenClaw)
+    name: 8 AIOps (OpenClaw)
     needs: [setup, instrument-apps]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.aiops == 'true' }}
     runs-on: *runner
+    timeout-minutes: 45
     environment: *environment
     permissions: *permissions
     container: *terraform-container

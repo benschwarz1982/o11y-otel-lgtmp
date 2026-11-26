@@ -1,5 +1,6 @@
 ---
 name: Destroy
+run-name: "Destroy ${{ inputs.scope }}${{ inputs.systems != 'all' && format(' - {0}', inputs.systems) || '' }}"
 
 # Manual only, guarded by typing "destroy". "everything" tears the demo
 # down in reverse dependency order:
@@ -57,8 +58,9 @@ env:
 
 jobs:
   setup:
-    name: Confirm and plan the run
+    name: Confirm and plan run
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
@@ -106,10 +108,11 @@ jobs:
           fi
 
   aiops:
-    name: AIOps (OpenClaw)
+    name: 1 AIOps (OpenClaw)
     needs: setup
     if: needs.setup.outputs.aiops == 'true'
     runs-on: &runner [self-hosted, linux, otel-demo]
+    timeout-minutes: 30
     environment: &environment demo
     permissions: &permissions
       contents: read
@@ -138,7 +141,7 @@ jobs:
         run: ci/scripts/cleanup.sh
 
   fleets:
-    name: Fleet ${{ matrix.system }}
+    name: 2 Fleet ${{ matrix.system }}
     needs: [setup, aiops]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.fleets != '[]' }}
     strategy:
@@ -146,6 +149,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.fleets) }}
     runs-on: *runner
+    timeout-minutes: 60
     environment: *environment
     permissions: *permissions
     container: *terraform-container
@@ -156,10 +160,11 @@ jobs:
       - *cleanup
 
   tenants:
-    name: Tenants
+    name: 2 Tenants
     needs: [setup, aiops]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.tenants == 'true' }}
     runs-on: *runner
+    timeout-minutes: 30
     environment: *environment
     permissions: *permissions
     container: *terraform-container
@@ -172,10 +177,11 @@ jobs:
       - *cleanup
 
   observability-stack:
-    name: Observability stack
+    name: 3 Observability stack
     needs: [setup, fleets, tenants]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.stack == 'true' }}
     runs-on: *runner
+    timeout-minutes: 90
     environment: *environment
     permissions: *permissions
     container: *terraform-container
@@ -191,10 +197,11 @@ jobs:
       - *cleanup
 
   infra:
-    name: Infra (AKS + network)
+    name: 4 Infra (AKS + network)
     needs: [setup, observability-stack]
     if: ${{ !cancelled() && !failure() && needs.setup.outputs.infra == 'true' }}
     runs-on: *runner
+    timeout-minutes: 60
     environment: *environment
     permissions: *permissions
     container: *terraform-container
