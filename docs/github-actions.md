@@ -97,35 +97,58 @@ One-time, in this order.
    contributors"; workflow permissions "Read repository contents" and
    "Allow GitHub Actions to create and approve pull requests" (the
    self-service workflow opens pull requests).
-2. **Azure (Cloud Shell, as Owner of the resource group).** The README
-   section A prerequisites stay the same (resource group, DNS zone,
-   `aks-vnet`, cert-manager service principal); A3-A5 (GitLab CI service
-   principal) are replaced by:
+2. **Azure bootstrap (as Owner of the resource group).** The prerequisites
+   from [setup, section A](setup.md#a-one-time-bootstrapping-manual) stay
+   the same (resource group, DNS zone, `aks-vnet`, cert-manager service
+   principal); A3-A5 (GitLab CI service principal) are replaced by
+   `bootstrap/bootstrap.sh`. It needs the Azure CLI signed in with an
+   account that may create role assignments - a pipeline service
+   principal with Contributor is not enough.
+
+   **Azure Cloud Shell** (portal → `>_` → Bash), one line at a time:
 
    ```bash
-   RG=<resource-group> GITHUB_REPO=<owner>/<repo> ./bootstrap/bootstrap.sh
+   git clone https://github.com/<owner>/<repo>.git && cd <repo>
+   export RG=<resource-group>
+   export GITHUB_REPO=<owner>/<repo>
+   ./bootstrap/bootstrap.sh
    ```
 
-   It prints the repository variables for the next step.
-3. **Variables and secrets.** Settings → Secrets and variables → Actions.
+   **Or any machine with the Azure CLI**, with your own login in a
+   separate profile (an existing `az` login stays untouched):
 
-   Repository **variables**:
+   ```bash
+   export AZURE_CONFIG_DIR=~/.azure-owner
+   az login --use-device-code
+   export RG=<resource-group>
+   export GITHUB_REPO=<owner>/<repo>
+   ./bootstrap/bootstrap.sh
+   ```
 
-   | Variable | Value |
+   The script is idempotent. It creates the state storage account
+   (`stotelstate<hash>`, container `tfstate`), the managed identity
+   `id-otel-demo-deploy` with federated credentials for the environment
+   `demo` and its three role assignments, then prints the values for the
+   next step.
+3. **Settings and secrets.** Every setting can be a repository variable
+   or a secret of the environment `demo` (masked in logs) - the workflows
+   read `vars.<NAME> || secrets.<NAME>`. Only `CI_IMAGE_PREFIX` and
+   `SELF_SERVICE_APP_ID` must be variables.
+
+   | Setting | Value |
    |---|---|
    | `AZURE_RESOURCE_GROUP` | the resource group (same as `RG` above) |
    | `DNS_ZONE` | Azure DNS zone of the public hostnames, e.g. `sre.example.com` |
-   | | `AZURE_RESOURCE_GROUP`, `DNS_ZONE`, `ACME_EMAIL` may also be `demo` environment secrets (masked in logs) |
    | `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID` | from bootstrap |
    | `TFSTATE_RESOURCE_GROUP`, `TFSTATE_STORAGE_ACCOUNT`, `TFSTATE_CONTAINER` | from bootstrap |
-   | `CERT_MANAGER_CLIENT_ID` | cert-manager service principal (README A6) |
-   | optional: `OPENCLAW_MODEL`, `AGENT_NAME`, `ORGANISATION_NAME`, `OPERATOR_NAME` | OpenClaw overrides (README A7) |
+   | `CERT_MANAGER_CLIENT_ID` | cert-manager service principal ([setup A6](setup.md#a6-create-the-cert-manager-service-principal)) |
+   | optional: `OPENCLAW_MODEL`, `AGENT_NAME`, `ORGANISATION_NAME`, `OPERATOR_NAME` | OpenClaw overrides ([setup A7](setup.md#a7-claude-subscription-setup-token--openclaw-gateway-token)) |
    | optional: `ACME_EMAIL` | Let's Encrypt contact address |
-   | optional: `CI_IMAGE_PREFIX` | default `ghcr.io/<owner>/<repo>/ci-tools` - set it (lowercase) if the repository name has capitals |
+   | optional, variable: `CI_IMAGE_PREFIX` | default `ghcr.io/<owner>/<repo>/ci-tools` - set it (lowercase) if the repository name has capitals |
 
    Settings → Environments → **`demo`**: deployment branches "Selected
-   branches" → `main` only. Environment **secrets** (same values as the
-   GitLab CI/CD variables):
+   branches" → `main` only. Environment **secrets** (always secrets; same
+   values as the GitLab CI/CD variables):
 
    | Secret | Used by |
    |---|---|

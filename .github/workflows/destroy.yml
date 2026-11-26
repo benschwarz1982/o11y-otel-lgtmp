@@ -44,14 +44,14 @@ env:
   TF_VAR_dns_zone_name: ${{ vars.DNS_ZONE || secrets.DNS_ZONE }}
   TF_VAR_acme_email: ${{ vars.ACME_EMAIL || secrets.ACME_EMAIL }}
   AKS_CLUSTER_NAME: aks-otel-demo
-  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
   ARM_USE_OIDC: "true"
   ARM_USE_AZUREAD: "true"
-  TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
-  TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
-  TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER }}
+  TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP || secrets.TFSTATE_RESOURCE_GROUP }}
+  TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT || secrets.TFSTATE_STORAGE_ACCOUNT }}
+  TFSTATE_CONTAINER: ${{ vars.TFSTATE_CONTAINER || secrets.TFSTATE_CONTAINER }}
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "0"
 
@@ -124,7 +124,7 @@ jobs:
       TF_VAR_anthropic_setup_token: ${{ secrets.ANTHROPIC_SETUP_TOKEN }}
       TF_VAR_openclaw_gateway_token: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
       TF_VAR_openclaw_hooks_token: ${{ secrets.OPENCLAW_HOOKS_TOKEN }}
-      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID }}
+      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID || secrets.CERT_MANAGER_CLIENT_ID }}
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -180,7 +180,7 @@ jobs:
     permissions: *permissions
     container: *terraform-container
     env:
-      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID }}
+      TF_VAR_cert_manager_client_id: ${{ vars.CERT_MANAGER_CLIENT_ID || secrets.CERT_MANAGER_CLIENT_ID }}
       TF_VAR_cert_manager_client_secret: ${{ secrets.CERT_MANAGER_CLIENT_SECRET }}
       TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
       TF_VAR_openclaw_hooks_token: ${{ secrets.OPENCLAW_HOOKS_TOKEN }}
