@@ -244,6 +244,12 @@ spec:
       batch:
         send_batch_size: 8192
         timeout: 5s
+      # hostmetrics emits one resource per scraper, all with the same
+      # attributes. The gateway's remote-write exporter turns each into
+      # its own target_info sample, and Mimir rejects those sharing a
+      # timestamp (sample_duplicate_timestamp). With no keys, groupbyattrs
+      # merges resources with identical attributes into one.
+      groupbyattrs/compact: {}
       memory_limiter:
         check_interval: 1s
         limit_percentage: 80
@@ -332,7 +338,7 @@ spec:
       pipelines:
         metrics:
           receivers: [hostmetrics, kubeletstats]
-          processors: [memory_limiter, resourcedetection, resource, transform/add_host_label, batch]
+          processors: [memory_limiter, resourcedetection, resource, transform/add_host_label, batch, groupbyattrs/compact]
           exporters: [otlp/gateway]
         # Separate pipeline for the otelcol self-scrape: it must NOT go
         # through the "resource" processor above, which unconditionally

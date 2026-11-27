@@ -196,8 +196,8 @@
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceqlSearch",
-          "query": "{}",
+          "queryType": "traceql",
+          "query": "{} with (most_recent=true)",
           "limit": 20,
           "tableType": "traces"
         }

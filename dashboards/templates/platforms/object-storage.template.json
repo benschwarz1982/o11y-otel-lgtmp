@@ -281,7 +281,7 @@
     {
       "id": 55,
       "title": "Daily Growth Rate",
-      "description": "storage_container_bytes minus its value 24h ago - a sudden jump or drop here is the anomaly signal to watch for. Empty for the first 24h after this metric was added (2026-08-21) since there's no data a day back yet - not a bug.",
+      "description": "Growth of storage_container_bytes over the last 24h - a sudden jump or drop here is the anomaly signal to watch for. max() first merges the series of old and new pods after a rollout into one curve; within the first 24h after a (re)build it estimates the growth from the samples available so far (delta() extrapolates). The trailing \"and max(...)\" hides the panel when the metric is no longer reported.",
       "type": "timeseries",
       "datasource": "__DATASOURCE_MIMIR__",
       "gridPos": {
@@ -299,7 +299,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "storage_container_bytes{k8s_pod_name=~\".+\"} - storage_container_bytes{k8s_pod_name=~\".+\"} offset 1d",
+          "expr": "delta((max(storage_container_bytes{k8s_pod_name=~\".+\"}))[1d:1m]) and max(storage_container_bytes{k8s_pod_name=~\".+\"})",
           "legendFormat": "growth (24h)"
         }
       ]
@@ -319,8 +319,8 @@
       "targets": [
         {
           "refId": "A",
-          "queryType": "traceqlSearch",
-          "query": "{}",
+          "queryType": "traceql",
+          "query": "{} with (most_recent=true)",
           "limit": 20,
           "tableType": "traces"
         }

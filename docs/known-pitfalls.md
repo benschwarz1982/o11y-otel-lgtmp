@@ -2,6 +2,33 @@
 
 ## Known Pitfalls
 
+- **Mimir discards samples as `sample_duplicate_timestamp` (1286, 4087)** -
+  the hostmetrics receiver emits one resource per scraper, all with the
+  same attributes. The gateway's remote-write exporter generates a
+  `target_info` sample per resource, so one host produced several
+  `target_info` samples with identical labels, and Mimir rejected the
+  ones sharing a timestamp. The agent collectors now merge identical
+  resources (`groupbyattrs/compact` without keys, after `batch`). Check:
+  in `Mimir-1286-prod` and `Mimir-4087-prod`,
+  `count_over_time(target_info{job=~".*hostmetrics"}[10m])`
+  is about 20 per host (30 s collection interval) instead of 60-100; in
+  `Mimir-anonymous`, `cortex_discarded_samples_total{reason="sample_duplicate_timestamp", user=~"1286-prod|4087-prod"}`
+  stops growing.
+- **"Recent Traces" panels show "No data" in Grafana 13** although Tempo
+  has traces - with `queryType: "traceqlSearch"` the panel editor builds
+  the query from `filters` and ignores `query`, so Grafana sends an empty
+  query (Grafana log: `query is required`). The panels and dashboard
+  templates use `queryType: "traceql"` with
+  `query: "{} with (most_recent=true)"` - without `most_recent` Tempo returns
+  the first 20 matches it finds, not the newest.
+- **Vendored dashboard 15983 (OpenTelemetry Collector) is trimmed** - the
+  processor panels for `otelcol_processor_accepted|refused|dropped_*`
+  were removed: the collector no longer emits these metrics, the
+  `otelcol_processor_incoming|outgoing_items` panels in the row above
+  replace them. Re-apply when updating the dashboard from grafana.com.
+  The "Filter processors" row stays: it shows what
+  `filter/reject_unknown_tenants` drops. Zero or an empty panel means
+  nothing was rejected in the selected interval.
 - **System status stays "unknown" (2) although metrics arrive** - the
   status rule checks `target_info`, which the gateway's Prometheus
   remote-write exporter only generates for resources with a `job` or

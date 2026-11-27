@@ -92,6 +92,12 @@ processors:
   batch:
     send_batch_size: 8192
     timeout: 5s
+  # hostmetrics emits one resource per scraper, all with the same
+  # attributes. The gateway's remote-write exporter turns each into its
+  # own target_info sample, and Mimir rejects those sharing a timestamp
+  # (sample_duplicate_timestamp). With no keys, groupbyattrs merges
+  # resources with identical attributes into one.
+  groupbyattrs/compact: {}
   memory_limiter:
     check_interval: 1s
     limit_percentage: 80
@@ -166,7 +172,7 @@ service:
   pipelines:
     metrics:
       receivers: [hostmetrics]
-      processors: [memory_limiter, resource/host, batch]
+      processors: [memory_limiter, resource/host, batch, groupbyattrs/compact]
       exporters: [otlp/host]
     logs:
       receivers: [journald]

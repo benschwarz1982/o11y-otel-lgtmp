@@ -77,14 +77,20 @@ resource "kubernetes_deployment_v1" "snmp_device" {
 
           command = ["sh", "-c", <<-EOT
             set -eu
+            export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends snmpd >/dev/null
             cat > /etc/snmp/snmpd.conf <<'EOF'
             rocommunity public
+            # No log line per incoming request (3 per collector scrape)
+            dontLogTCPWrappersConnects yes
             syslocation "Demo Netzwerk Basis (1294)"
             syscontact platform-team@example.com
             EOF
-            exec /usr/sbin/snmpd -f -Lo -c /etc/snmp/snmpd.conf
+            # Listen on loopback only - the collector sidecar is the only
+            # client. Passed as an argument: an agentaddress line would be
+            # read twice (default path and -c) and make snmpd fail to bind.
+            exec /usr/sbin/snmpd -f -Lo -c /etc/snmp/snmpd.conf udp:127.0.0.1:161
           EOT
           ]
 
