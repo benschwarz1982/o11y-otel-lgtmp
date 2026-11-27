@@ -867,14 +867,14 @@ platform/runtime template).
 Runs automatically as part of the `tenants:rollout` job (moved from
 `deploy:observability-stack` after a live bug - see
 [`alerting/README.md`](../alerting/README.md)'s own top section): Grafana
-Unified Alerting rules plus exactly one contact point,
-`openclaw` (webhook, [`alerting/shared/openclaw-webhook.yaml`](../alerting/shared/openclaw-webhook.yaml)).
+Unified Alerting rules plus two contact points in
+[`alerting/shared/openclaw-webhook.yaml`](../alerting/shared/openclaw-webhook.yaml):
+`openclaw` (webhook) and `no-delivery` (the root receiver).
 The notification policy routes three alerts there - UC1 (`1286 Linux
 Basis - host CPU > 80%`), UC2 (`1229 Windows Server Basis - Print
 Spooler service crashed`) and `Ingestion budget not enforced for a
-tenant`. Everything else ends at Grafana's built-in
-`grafana-default-email` receiver, which has no SMTP configured on
-purpose (demo): those alerts are only visible as Firing/Pending/Normal
+tenant`. Everything else ends at the `no-delivery` receiver
+(e-mail, no SMTP configured on purpose - demo): those alerts are only visible as Firing/Pending/Normal
 on Grafana's Alerting page, and Grafana logs a harmless "SMTP not
 configured" error per notification. Same
 ConfigMap+sidecar auto-discovery mechanism as

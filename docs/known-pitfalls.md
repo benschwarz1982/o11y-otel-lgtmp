@@ -2,6 +2,13 @@
 
 ## Known Pitfalls
 
+- **No alert rules at all in Grafana after a Grafana upgrade** - the
+  alert sidecar's reload failed with `alerting.notifications.routes.invalidFormat`
+  ("receiver 'grafana-default-email' does not exist"): Grafana 12.4 renamed
+  its built-in default contact point, and one invalid policy makes
+  Grafana reject the entire alerting provisioning. The root receiver is
+  now the repository's own `no-delivery` contact point. Check after
+  every Grafana bump: Alerting → Alert rules must list the rules.
 - **The Linkerd mesh rollout failed with `failed calling webhook
   "prepare-downscale-observability.grafana.com" ... no endpoints available
   for service "mimir-rollout-operator"`** - restarting every workload at

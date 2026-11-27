@@ -22,6 +22,9 @@ on:  # yamllint disable-line rule:truthy
       - datasources/**
       - dashboards/**
       - tls-certs/**
+      - alerting/**
+      - terraform/environments/tenants/**
+      - scripts/sync-mimir-rules.py
   workflow_dispatch:
 
 permissions: {}
