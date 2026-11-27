@@ -31,6 +31,21 @@
 apiVersion: 1
 
 contactPoints:
+  # Root receiver for everything not routed to OpenClaw. Defined here
+  # instead of relying on Grafana's built-in default contact point,
+  # whose name differs between versions ("grafana-default-email" before
+  # Grafana 12.4, "empty" since) - a root receiver that doesn't exist
+  # makes Grafana reject the whole alerting provisioning, rules
+  # included. No SMTP is configured (demo): these alerts are only
+  # visible on Grafana's Alerting page.
+  - orgId: 1
+    name: no-delivery
+    receivers:
+      - uid: no_delivery
+        type: email
+        settings:
+          addresses: noreply@example.com
+        disableResolveMessage: true
   - orgId: 1
     name: openclaw
     receivers:
@@ -126,18 +141,16 @@ contactPoints:
 # fall back to its own untouched built-in default - which meant every
 # alert kept going to that default instead of ever reaching the
 # "openclaw" route below, with no visible error anywhere in the UI:
-#   1. receiver: "empty" doesn't correspond to any real contact point
-#      in this Grafana version - confirmed live, its actual built-in
-#      default receiver name is "grafana-default-email" (an older
-#      source-code check that found "empty" was apparently against a
-#      different Grafana version than what's actually deployed here).
+#   1. the root receiver must be an existing contact point - it is
+#      the "no-delivery" contact point above, not Grafana's built-in
+#      default (renamed between Grafana versions).
 #   2. group_wait/group_interval/repeat_interval were missing
 #      entirely - present in every field in Grafana's own official
 #      file-provisioning example for both the root policy and every
 #      nested route, not just optional documentation filler.
 policies:
   - orgId: 1
-    receiver: grafana-default-email
+    receiver: no-delivery
     group_by: ["..."]
     group_wait: 30s
     group_interval: 5m

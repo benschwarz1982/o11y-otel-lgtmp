@@ -78,7 +78,7 @@ resource "kubernetes_deployment_v1" "snmp_device" {
           command = ["sh", "-c", <<-EOT
             set -eu
             apt-get update -qq
-            apt-get install -y -qq snmpd >/dev/null
+            apt-get install -y -qq --no-install-recommends snmpd >/dev/null
             cat > /etc/snmp/snmpd.conf <<'EOF'
             rocommunity public
             syslocation "Demo Netzwerk Basis (1294)"
@@ -88,13 +88,15 @@ resource "kubernetes_deployment_v1" "snmp_device" {
           EOT
           ]
 
+          # The limit covers the apt-get install at container start
+          # (Debian 13's apt peaks above 128Mi); snmpd itself needs a few Mi.
           resources {
             requests = {
               cpu    = "20m"
               memory = "64Mi"
             }
             limits = {
-              memory = "128Mi"
+              memory = "256Mi"
             }
           }
         }
