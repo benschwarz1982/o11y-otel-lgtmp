@@ -2,6 +2,14 @@
 
 ## Known Pitfalls
 
+- **The Linkerd mesh rollout failed with `failed calling webhook
+  "prepare-downscale-observability.grafana.com" ... no endpoints available
+  for service "mimir-rollout-operator"`** - restarting every workload at
+  once also restarted the rollout-operator, whose admission webhooks
+  (`failurePolicy: Fail`) guard the Mimir StatefulSets. The rollout
+  (`null_resource.linkerd_mesh_rollout`, observability-stack-crs) now
+  restarts the operator first, waits for it, then restarts the other
+  workloads one by one with retries.
 - **A `deploy:infra` that reimages nodes (e.g. enabling Calico) can
   fail with `failed calling webhook "pod-eviction-observability.grafana.com"
   ... no endpoints available for service "mimir-rollout-operator"`** -
