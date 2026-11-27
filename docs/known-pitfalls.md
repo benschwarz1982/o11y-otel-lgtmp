@@ -2,6 +2,14 @@
 
 ## Known Pitfalls
 
+- **OpenClaw finds the runbook but cannot run any command after a fresh
+  build** - every `exec` call fails with `EACCES: permission denied,
+  mkdir '/home/node/.openclaw/workspace/.openclaw'`. On a new PVC the
+  container runtime creates `workspace/` (the parent of the four
+  ConfigMap file mounts and the `runbooks` emptyDir mount) as root:root 0755 after the home-permissions
+  init container has run. The init container now creates `workspace/`
+  itself before handing the PVC to UID 1000. Found with UC1: alert fired,
+  webhook arrived, result "blocked".
 - **Mimir discards samples as `sample_duplicate_timestamp` (1286, 4087)** -
   the hostmetrics receiver emits one resource per scraper, all with the
   same attributes. The gateway's remote-write exporter generates a
