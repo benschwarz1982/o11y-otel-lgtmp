@@ -2,6 +2,15 @@
 
 ## Known Pitfalls
 
+- **UC2 never fires after the Loki upgrade, although the Print Spooler
+  crash events (7031) arrive in Loki** - Loki 3.7 (chart 21.x) stores
+  `detected_level` lowercase (`error`, `info`), the 1229 alert rule and
+  dashboard panels matched the exact value `"ERROR"` / `"INFO"` and
+  silently returned nothing. They now match case-insensitively
+  (`detected_level=~"(?i)error"`). Check after every Loki bump: run the
+  alert's own expression in Explore (`Loki-1229-prod`) over a window that
+  contains a Print Spooler 7031 event (e.g. during `uc2-break`) and
+  expect a positive count.
 - **OpenClaw's SSH login to vm-rocky-demo is refused although the key
   matches** - OpenClaw reports "Permission denied (publickey)"; the VM's
   sshd log shows `Authentication refused: bad ownership or modes for
