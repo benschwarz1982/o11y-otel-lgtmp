@@ -394,10 +394,35 @@ resource "null_resource" "linkerd_mesh_rollout" {
     # combined command stays for those; StatefulSets are checked
     # individually, skipping (not failing) the ones kubectl can't watch
     # this way.
+    #
+    # mimir-rollout-operator serves admission webhooks (failurePolicy:
+    # Fail) for the Mimir StatefulSets. Restarting it together with
+    # everything else made the StatefulSet patches fail while its own
+    # pod was being replaced ("no endpoints available for service
+    # mimir-rollout-operator"). So: restart it alone and wait for it,
+    # then the rest, retrying should the webhook still be coming up.
     command = <<-EOT
       set -e
-      kubectl rollout restart deployment,statefulset,daemonset -n observability
-      kubectl rollout status deployment,daemonset -n observability --timeout=600s
+      ns=observability
+      op=deployment/mimir-rollout-operator
+      kubectl rollout restart "$op" -n "$ns"
+      kubectl rollout status "$op" -n "$ns" --timeout=600s
+      restart() {
+        for attempt in 1 2 3 4 5; do
+          kubectl rollout restart "$@" -n "$ns" && return 0
+          echo "Retrying in 15s (attempt $attempt)"
+          sleep 15
+        done
+        return 1
+      }
+      # One object per call: a retry then only repeats the failed one.
+      # Separate assignment, so a failed listing stops the script (set -e
+      # does not apply to a command substitution in a for list).
+      resources=$(kubectl get deployment,daemonset,statefulset -n "$ns" -o name)
+      for r in $resources; do
+        [ "$r" = "deployment.apps/mimir-rollout-operator" ] || restart "$r"
+      done
+      kubectl rollout status deployment,daemonset -n "$ns" --timeout=600s
       for sts in $(kubectl get statefulset -n observability -o jsonpath='{.items[*].metadata.name}'); do
         strategy=$(kubectl get statefulset "$sts" -n observability -o jsonpath='{.spec.updateStrategy.type}')
         if [ "$strategy" = "RollingUpdate" ]; then
