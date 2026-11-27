@@ -149,7 +149,7 @@
     {
       "id": 7,
       "title": "Recent Logs",
-      "description": "The snmpd container's own connection log (real, not synthetic) - was invisible here until the daemonset's log routing fix (see README.md Known Pitfalls), which had every container log across the cluster landing under 4087-prod regardless of owning tenant.",
+      "description": "Logs of the snmpd and collector containers (real, not synthetic): startup, warnings and errors. snmpd does not log single SNMP requests (dontLogTCPWrappersConnects). Was invisible here until the daemonset's log routing fix (see docs/known-pitfalls.md), which had every container log across the cluster landing under 4087-prod regardless of owning tenant.",
       "type": "logs",
       "datasource": "__DATASOURCE_LOKI__",
       "gridPos": { "x": 0, "y": 23, "w": 24, "h": 8 },

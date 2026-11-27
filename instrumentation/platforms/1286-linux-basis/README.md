@@ -25,7 +25,9 @@ it (`deploy-instrumentations:1286-linux-basis`).
 │  │  OTel Collector (Contrib, Agent)     ││
 │  │  receivers: journald, hostmetrics    ││
 │  │  processors: memory_limiter,         ││
-│  │              resource/host, batch    ││
+│  │              resource/host, batch,   ││
+│  │              groupbyattrs/compact    ││
+│  │              (metrics only)          ││
 │  └───────────────────┬───────────────────┘│
 └──────────────────────┼──────────────────┘
                         │ OTLP/gRPC, tenant_id header

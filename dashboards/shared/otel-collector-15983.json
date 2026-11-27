@@ -1054,693 +1054,6 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Accepted: count/rate of spans successfully pushed into the next component in the pipeline.\nRefused: count/rate of spans that were rejected by the next component in the pipeline.\nDropped: count/rate of spans that were dropped",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/Refused.*/"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/Dropped.*/"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "purple",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 18
-      },
-      "id": 35,
-      "interval": "$minstep",
-      "options": {
-        "annotations": {
-          "clustering": -1,
-          "multiLane": false
-        },
-        "legend": {
-          "calcs": [
-            "min",
-            "max",
-            "mean"
-          ],
-          "displayMode": "table",
-          "enableFacetedFilter": false,
-          "overflow": "ellipsis",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "13.2.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_accepted_spans${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Accepted: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_refused_spans${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Refused: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_dropped_spans${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Dropped: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+accepted_spans.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?accepted_spans${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_accepted_spans${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Accepted: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+refused_spans.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?refused_spans${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_refused_spans${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Refused: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+dropped_spans.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?dropped_spans${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_dropped_spans${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Dropped: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "F"
-        }
-      ],
-      "title": "Spans ${metric:text}",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Accepted: count/rate of metric points successfully pushed into the next component in the pipeline.\nRefused: count/rate of metric points that were rejected by the next component in the pipeline.\nDropped: count/rate of metric points that were dropped",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/Refused.*/"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/Dropped.*/"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "purple",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 18
-      },
-      "id": 50,
-      "interval": "$minstep",
-      "options": {
-        "annotations": {
-          "clustering": -1,
-          "multiLane": false
-        },
-        "legend": {
-          "calcs": [
-            "min",
-            "max",
-            "mean"
-          ],
-          "displayMode": "table",
-          "enableFacetedFilter": false,
-          "overflow": "ellipsis",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "13.2.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_accepted_metric_points${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Accepted: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_refused_metric_points${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Refused: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_dropped_metric_points${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Dropped: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+accepted_metric_points.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?accepted_metric_points${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_accepted_metric_points${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Accepted: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+refused_metric_points.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?refused_metric_points${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_refused_metric_points${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Refused: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+dropped_metric_points.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?dropped_metric_points${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_dropped_metric_points${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Dropped: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "F"
-        }
-      ],
-      "title": "Metric Points ${metric:text}",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Accepted: count/rate of log records successfully pushed into the next component in the pipeline.\nRefused: count/rate of log records that were rejected by the next component in the pipeline.\nDropped: count/rate of log records that were dropped",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/Refused.*/"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/Dropped.*/"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "purple",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 18
-      },
-      "id": 51,
-      "interval": "$minstep",
-      "options": {
-        "annotations": {
-          "clustering": -1,
-          "multiLane": false
-        },
-        "legend": {
-          "calcs": [
-            "min",
-            "max",
-            "mean"
-          ],
-          "displayMode": "table",
-          "enableFacetedFilter": false,
-          "overflow": "ellipsis",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "13.2.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_accepted_log_records${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Accepted: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_refused_log_records${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping) ",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Refused: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(${metric:value}(otelcol_processor_dropped_log_records${suffix_total}{processor=~\"$processor\",job=\"$job\"}[$__rate_interval])) by (processor $grouping)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Dropped: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+accepted_log_records.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?accepted_log_records${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_accepted_log_records${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Accepted: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+refused_log_records.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?refused_log_records${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_refused_log_records${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Refused: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum by (processor, $grouping) (  \r\n  label_replace(  \r\n    label_replace(  \r\n      ${metric:value}(  \r\n        {  \r\n          __name__=~\".*otelcol_processor_.+dropped_log_records.*\",  \r\n          processor=~\"$processor\",  \r\n          job=\"$job\"  \r\n        }[$__rate_interval]  \r\n      ),  \r\n      \"processor\", \"$1\",  \r\n      \"__name__\", \"otelcol_processor_(?:(.+)_)?dropped_log_records${suffix_total}\"  \r\n    ),  \r\n    \"__name__\", \"otelcol_processor_dropped_log_records${suffix_total}\",  \r\n    \"__name__\", \".*\"  \r\n  )  \r\n)",
-          "format": "time_series",
-          "interval": "$minstep",
-          "intervalFactor": 1,
-          "legendFormat": "Dropped: {{processor}} {{service_instance_id}}{{service.instance.id}}",
-          "range": true,
-          "refId": "F"
-        }
-      ],
-      "title": "Log Records ${metric:text}",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
       "description": "Number of units in the batch",
       "fieldConfig": {
         "defaults": {
@@ -1761,7 +1074,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 26
+        "y": 18
       },
       "id": 49,
       "interval": "$minstep",
@@ -1904,7 +1217,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 26
+        "y": 18
       },
       "id": 36,
       "interval": "$minstep",
@@ -2047,7 +1360,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 26
+        "y": 18
       },
       "id": 56,
       "interval": "$minstep",
@@ -2116,7 +1429,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 26
       },
       "id": 88,
       "title": "Exporters",
@@ -2209,7 +1522,7 @@
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 35
+        "y": 27
       },
       "id": 37,
       "interval": "$minstep",
@@ -2374,7 +1687,7 @@
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 35
+        "y": 27
       },
       "id": 38,
       "interval": "$minstep",
@@ -2539,7 +1852,7 @@
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 35
+        "y": 27
       },
       "id": 48,
       "interval": "$minstep",
@@ -2683,7 +1996,7 @@
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 44
+        "y": 36
       },
       "id": 10,
       "options": {
@@ -2796,7 +2109,7 @@
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 44
+        "y": 36
       },
       "id": 55,
       "options": {
@@ -2909,7 +2222,7 @@
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 44
+        "y": 36
       },
       "id": 67,
       "options": {
@@ -2962,7 +2275,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 45
       },
       "id": 89,
       "title": "Collector",
@@ -3105,7 +2418,7 @@
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 54
+        "y": 46
       },
       "id": 40,
       "interval": "$minstep",
@@ -3320,7 +2633,7 @@
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 54
+        "y": 46
       },
       "id": 52,
       "interval": "$minstep",
@@ -3535,7 +2848,7 @@
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 54
+        "y": 46
       },
       "id": 53,
       "interval": "$minstep",
@@ -3746,7 +3059,7 @@
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 63
+        "y": 55
       },
       "id": 39,
       "interval": "$minstep",
@@ -3892,7 +3205,7 @@
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 63
+        "y": 55
       },
       "id": 41,
       "interval": "$minstep",
@@ -4006,7 +3319,7 @@
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 63
+        "y": 55
       },
       "id": 54,
       "interval": "$minstep",
@@ -4096,7 +3409,7 @@
         "h": 5,
         "w": 24,
         "x": 0,
-        "y": 72
+        "y": 64
       },
       "id": 57,
       "interval": "$minstep",
@@ -4145,7 +3458,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 69
       },
       "id": 90,
       "title": "Signal flows",
@@ -4161,7 +3474,7 @@
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 78
+        "y": 70
       },
       "id": 58,
       "options": {
@@ -4239,7 +3552,7 @@
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 78
+        "y": 70
       },
       "id": 60,
       "options": {
@@ -4317,7 +3630,7 @@
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 78
+        "y": 70
       },
       "id": 61,
       "options": {
@@ -4391,7 +3704,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 87
+        "y": 79
       },
       "id": 91,
       "panels": [
@@ -4460,7 +3773,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 88
+            "y": 80
           },
           "id": 32,
           "interval": "$minstep",
@@ -4573,7 +3886,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 88
+            "y": 80
           },
           "id": 81,
           "interval": "$minstep",
@@ -4686,7 +3999,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 88
+            "y": 80
           },
           "id": 82,
           "interval": "$minstep",
@@ -4744,7 +4057,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 88
+        "y": 80
       },
       "id": 92,
       "panels": [
@@ -5022,7 +4335,7 @@
             "h": 9,
             "w": 12,
             "x": 0,
-            "y": 89
+            "y": 81
           },
           "id": 69,
           "interval": "$minstep",
@@ -5341,7 +4654,7 @@
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 89
+            "y": 81
           },
           "id": 70,
           "interval": "$minstep",
@@ -5409,7 +4722,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 98
+            "y": 90
           },
           "id": 72,
           "interval": "$minstep",
@@ -5497,7 +4810,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 98
+            "y": 90
           },
           "id": 74,
           "interval": "$minstep",
@@ -5572,7 +4885,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 89
+        "y": 81
       },
       "id": 93,
       "panels": [
@@ -5599,7 +4912,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 90
+            "y": 82
           },
           "id": 76,
           "interval": "$minstep",
@@ -5683,7 +4996,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 90
+            "y": 82
           },
           "id": 78,
           "interval": "$minstep",
@@ -5754,7 +5067,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 90
+        "y": 82
       },
       "id": 94,
       "panels": [
@@ -5845,7 +5158,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 91
+            "y": 83
           },
           "id": 64,
           "interval": "$minstep",
@@ -5974,7 +5287,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 91
+            "y": 83
           },
           "id": 65,
           "interval": "$minstep",
@@ -6062,7 +5375,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 83
       },
       "id": 95,
       "title": "Documentation",
@@ -6073,7 +5386,7 @@
         "h": 3,
         "w": 24,
         "x": 0,
-        "y": 92
+        "y": 84
       },
       "id": 45,
       "options": {

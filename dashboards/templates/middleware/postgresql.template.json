@@ -199,7 +199,7 @@
       "datasource": "__DATASOURCE_TEMPO__",
       "gridPos": { "x": 0, "y": 31, "w": 24, "h": 8 },
       "targets": [
-        { "refId": "A", "queryType": "traceqlSearch", "query": "{}", "limit": 20, "tableType": "traces" }
+        { "refId": "A", "queryType": "traceql", "query": "{} with (most_recent=true)", "limit": 20, "tableType": "traces" }
       ]
     },
     {

@@ -242,7 +242,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "ops",
+          "noValue": "No discard data"
         },
         "overrides": []
       },
@@ -268,7 +269,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "Bps"
+          "unit": "Bps",
+          "noValue": "No discard data"
         },
         "overrides": []
       },
@@ -294,7 +296,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "unit": "ops",
+          "noValue": "No discard data"
         },
         "overrides": []
       },
