@@ -2,13 +2,23 @@
 
 ## Known Pitfalls
 
+- **System status stays "unknown" (2) although metrics arrive** - the
+  status rule checks `target_info`, which the gateway's Prometheus
+  remote-write exporter only generates for resources with a `job` or
+  `instance` identifier. The SNMP receiver's resources (1294) carry
+  neither; `service.name` now supplies the `job`, `service.namespace`
+  qualifies it.
 - **No alert rules at all in Grafana after a Grafana upgrade** - the
   alert sidecar's reload failed with `alerting.notifications.routes.invalidFormat`
   ("receiver 'grafana-default-email' does not exist"): Grafana 12.4 renamed
   its built-in default contact point, and one invalid policy makes
   Grafana reject the entire alerting provisioning. The root receiver is
   now the repository's own `no-delivery` contact point. Check after
-  every Grafana bump: Alerting → Alert rules must list the rules.
+  every Grafana bump that the current reload succeeded: the Grafana log
+  shows `finished to provision alerting` and the active policy root is
+  `no-delivery` (rules persisted from before can still be listed after
+  a failed reload). Changes under `alerting/` roll out by starting the
+  Tenants workflow by hand.
 - **The Linkerd mesh rollout failed with `failed calling webhook
   "prepare-downscale-observability.grafana.com" ... no endpoints available
   for service "mimir-rollout-operator"`** - restarting every workload at
