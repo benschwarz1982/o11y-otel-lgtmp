@@ -111,14 +111,18 @@ below - UC1 is 1286 (the platform) only now, no app to open.
    actually pick up a ConfigMap content change without a restart (its
    config volume looks seeded once at pod start, not a live mount).
 3. Repeat the same checkout - "the customer reports the site is
-   slow": the shipping step now visibly hangs for ~5s.
+   slow": the shipping step now visibly hangs for ~5s. Don't skip this
+   step: the slowdown only hits international orders, and the shop's
+   own load generator rarely places one (8 of its 9 sample customers
+   have a US address) - found live: without a manual non-US checkout
+   the alert took ~6 minutes to fire after `demo:uc3-break`.
 4. In Grafana, open the Astronomy Shop dashboard's **Recent Traces**
    panel (or Explore → Tempo, datasource `tempo-4720-prod`, query
    `{resource.service.name="shipping" && duration > 1s}`) and find a
    checkout trace with it - a long `shipping` span shows exactly where
    the delay is. On the dashboard's **Request Latency (p95) by
-   Endpoint/Operation** panel, filter/look for the **`POST
-   /ship-order`** series specifically - that's the one span_name that
+   Endpoint/Operation** panel, click the **`POST /ship-order`**
+   series in the legend to show it alone - that's the one span_name that
    actually spikes (~4.1s p95 while broken), every other series on
    that panel stays fast throughout.
 5. Check Grafana's Alerting page: **"4720 OTel Astronomy Shop Demo -
