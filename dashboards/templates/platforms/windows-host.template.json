@@ -245,7 +245,7 @@
       "gridPos": { "x": 0, "y": 39, "w": 12, "h": 7 },
       "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=\"ERROR\" [$__interval])) or vector(0)", "legendFormat": "Error" }
+        { "refId": "A", "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=~\"(?i)error\" [$__interval])) or vector(0)", "legendFormat": "Error" }
       ]
     },
     {
@@ -256,7 +256,7 @@
       "gridPos": { "x": 12, "y": 39, "w": 12, "h": 7 },
       "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
       "targets": [
-        { "refId": "A", "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=\"INFO\" [$__interval])) or vector(0)", "legendFormat": "Information" }
+        { "refId": "A", "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=~\"(?i)info\" [$__interval])) or vector(0)", "legendFormat": "Information" }
       ]
     },
     {

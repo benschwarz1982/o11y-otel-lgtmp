@@ -414,7 +414,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=\"ERROR\" [$__interval])) or vector(0)",
+          "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=~\"(?i)error\" [$__interval])) or vector(0)",
           "legendFormat": "Error"
         }
       ]
@@ -440,7 +440,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=\"INFO\" [$__interval])) or vector(0)",
+          "expr": "sum(count_over_time({service_name=~\".+\"} | detected_level=~\"(?i)info\" [$__interval])) or vector(0)",
           "legendFormat": "Information"
         }
       ]

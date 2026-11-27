@@ -18,9 +18,12 @@
 # terminated unexpectedly") for as long as the underlying problem (the
 # loop) actually persists - confirmed live over several 30s cycles -
 # so this alert tracks genuine ongoing state, not a one-off burst.
-# Confirmed live: the resulting log lines land in Loki with
-# detected_level="ERROR" (OTel severity text, not Windows' own "Error"
-# spelling) via the windowseventlog receiver's own severity mapping.
+# The resulting log lines land in Loki with detected_level "error"
+# (from the windowseventlog receiver's severity mapping). Matched
+# case-insensitively: older Loki versions stored "ERROR", Loki 3.7
+# (chart 21.x) stores lowercase "error" - found live: the exact
+# "ERROR" match silently stopped matching after the Loki upgrade and
+# UC2 never fired.
 #
 # relativeTimeRange 60s (not this repo's usual 600s) - tuned for demo
 # pacing after finding the default made demo:uc2-fix -> alert-clears
@@ -75,7 +78,7 @@ groups:
             relativeTimeRange: {from: 60, to: 0}
             datasourceUid: loki-1229-prod
             model:
-              expr: sum(count_over_time({service_name=~".+"} | detected_level="ERROR" |= "Print Spooler" | json event_id_id="event_id.id" | event_id_id="7031" [1m])) or vector(0)
+              expr: sum(count_over_time({service_name=~".+"} | detected_level=~"(?i)error" |= "Print Spooler" | json event_id_id="event_id.id" | event_id_id="7031" [1m])) or vector(0)
               instant: false
               range: true
               refId: A
