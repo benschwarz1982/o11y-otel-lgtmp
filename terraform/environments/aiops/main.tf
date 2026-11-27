@@ -177,6 +177,11 @@ resource "azurerm_virtual_machine_run_command" "openclaw_ssh_key" {
     script = <<-EOT
       set -eu
       id openclaw >/dev/null 2>&1 || useradd -m -s /bin/bash openclaw
+      # sshd (StrictModes) ignores a key file if any directory on its path
+      # is group/world-writable. The Rocky 9 marketplace image ships /etc
+      # as 0775 (package default 0755) - found live: "Authentication
+      # refused: bad ownership or modes for directory /etc".
+      chmod go-w /etc /etc/ssh
       install -d -m 755 -o root -g root /etc/ssh/authorized_keys.d
       tmp=$(mktemp /etc/ssh/authorized_keys.d/.openclaw.XXXXXX)
       echo 'restrict ${local.openclaw_ssh_public_key}' > "$tmp"

@@ -2,6 +2,14 @@
 
 ## Known Pitfalls
 
+- **OpenClaw's SSH login to vm-rocky-demo is refused although the key
+  matches** - OpenClaw reports "Permission denied (publickey)"; the VM's
+  sshd log shows `Authentication refused: bad ownership or modes for
+  directory /etc`. The Rocky 9 marketplace image ships `/etc` as 0775
+  (package default 0755), and sshd's StrictModes rejects a key file under
+  a group-writable directory - here `/etc/ssh/authorized_keys.d/openclaw`.
+  The aiops run command now removes group/other write from `/etc` and
+  `/etc/ssh` before installing the key. Found with UC1 after a rebuild.
 - **OpenClaw finds the runbook but cannot run any command after a fresh
   build** - every `exec` call fails with `EACCES: permission denied,
   mkdir '/home/node/.openclaw/workspace/.openclaw'`. On a new PVC the
