@@ -93,6 +93,17 @@ processors:
       - key: deployment.environment
         value: prod
         action: upsert
+      # The SNMP receiver's resources carry no job/instance identifier,
+      # so the gateway generated no target_info for this tenant and the
+      # G08 status rule (system:telemetry:present,
+      # scripts/generate-rules.py) reported 1294 as "unknown" forever.
+      # service.name supplies the job, service.namespace qualifies it.
+      - key: service.namespace
+        value: network-agent
+        action: upsert
+      - key: service.name
+        value: snmp-device
+        action: upsert
 
 exporters:
   otlphttp:
