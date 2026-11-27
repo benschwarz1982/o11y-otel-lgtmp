@@ -408,10 +408,15 @@ resource "kubernetes_deployment_v1" "openclaw" {
         # hands the whole PVC to UID 1000 and makes it private again.
         # Symbolic g-s/u-s, not an octal mode: GNU chmod keeps setgid on
         # directories for a plain octal mode like 700.
+        # mkdir first: on a fresh PVC, workspace/ does not exist yet when
+        # this runs - the container runtime creates it afterwards as the
+        # parent of the subPath mounts below, owned by root:root 0755, and
+        # OpenClaw's exec tool then fails with "EACCES: permission denied,
+        # mkdir '/home/node/.openclaw/workspace/.openclaw'".
         init_container {
           name    = "home-permissions"
           image   = "ghcr.io/openclaw/openclaw:2026.11.10"
-          command = ["sh", "-c", "chown -R 1000:1000 /openclaw-home && find /openclaw-home -type d -exec chmod u+rwx,go-rwx,ug-s,a-t {} + && find /openclaw-home -type f -exec chmod go-rwx,ug-s,a-t {} +"]
+          command = ["sh", "-c", "mkdir -p /openclaw-home/workspace && chown -R 1000:1000 /openclaw-home && find /openclaw-home -type d -exec chmod u+rwx,go-rwx,ug-s,a-t {} + && find /openclaw-home -type f -exec chmod go-rwx,ug-s,a-t {} +"]
           security_context {
             run_as_non_root            = false
             run_as_user                = 0
